@@ -43,7 +43,6 @@ export function PaymentsClient({ payments: initial }: { payments: IPayment[] }) 
               <TableHead>Date</TableHead>
               <TableHead>Customer</TableHead>
               <TableHead>Phone</TableHead>
-              <TableHead>Plot</TableHead>
               <TableHead>Amount</TableHead>
               <TableHead>Reference</TableHead>
               <TableHead>SMS</TableHead>
@@ -53,7 +52,7 @@ export function PaymentsClient({ payments: initial }: { payments: IPayment[] }) 
           <TableBody>
             {payments.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                   No payments yet
                 </TableCell>
               </TableRow>
@@ -66,7 +65,6 @@ export function PaymentsClient({ payments: initial }: { payments: IPayment[] }) 
                   </TableCell>
                   <TableCell>{payment.customer?.name || 'N/A'}</TableCell>
                   <TableCell>{payment.customer?.phone || 'N/A'}</TableCell>
-                  <TableCell>{payment.plot?.plotNumber || 'N/A'}</TableCell>
                   <TableCell>KES {payment.amount.toLocaleString()}</TableCell>
                   <TableCell className="text-xs">{payment.reference || '-'}</TableCell>
                   <TableCell>

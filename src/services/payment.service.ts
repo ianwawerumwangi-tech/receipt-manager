@@ -1,6 +1,6 @@
 import { dbConnect } from '@/lib/mongodb';
 import { Payment, IPaymentDocument } from '@/models/Payment';
-import { Plot } from '@/models/Plot';
+import { Customer } from '@/models/Customer';
 import { SmsLog } from '@/models/SmsLog';
 import { buildSmsTemplate, sendSms } from '@/lib/sms';
 import { serialize } from '@/lib/utils';
@@ -16,7 +16,6 @@ function generateReceiptNumber(): string {
 
 export async function createPayment(data: {
   customerId: string;
-  plotId: string;
   amount: number;
   paymentMethod: string;
   reference: string;
@@ -31,7 +30,6 @@ export async function createPayment(data: {
   const payment = await Payment.create({
     receiptNumber,
     customer: data.customerId,
-    plot: data.plotId,
     amount: data.amount,
     paymentMethod: data.paymentMethod,
     reference: data.reference,
@@ -43,12 +41,10 @@ export async function createPayment(data: {
 
   const populated = await Payment.findById(payment._id)
     .populate('customer', 'name phone')
-    .populate('plot', 'plotNumber project')
     .lean();
 
   return serialize(populated) as unknown as IPaymentDocument & {
     customer: { name: string; phone: string };
-    plot: { plotNumber: string; project: string };
   };
 }
 
@@ -56,8 +52,7 @@ export async function sendPaymentSms(paymentId: string) {
   await dbConnect();
 
   const payment = await Payment.findById(paymentId)
-    .populate<{ customer: { name: string; phone: string } }>('customer', 'name phone')
-    .populate<{ plot: { plotNumber: string; project: string } }>('plot', 'plotNumber project');
+    .populate<{ customer: { name: string; phone: string } }>('customer', 'name phone');
 
   if (!payment) throw new Error('Payment not found');
 
@@ -65,7 +60,6 @@ export async function sendPaymentSms(paymentId: string) {
     customerName: payment.customer.name,
     amount: payment.amount,
     receiptNumber: payment.receiptNumber,
-    plot: `${payment.plot.plotNumber} - ${payment.plot.project}`,
   });
 
   const result = await sendSms(payment.customer.phone, message);
@@ -106,7 +100,6 @@ export async function getPayments(options?: {
   const [payments, total] = await Promise.all([
     Payment.find(query)
       .populate('customer', 'name phone')
-      .populate('plot', 'plotNumber project')
       .populate('recordedBy', 'name')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -136,7 +129,6 @@ export async function getDashboardData() {
     Payment.countDocuments({ smsStatus: 'failed', paymentDate: { $gte: today, $lt: tomorrow } }),
     Payment.find()
       .populate('customer', 'name phone')
-      .populate('plot', 'plotNumber project')
       .populate('recordedBy', 'name')
       .sort({ createdAt: -1 })
       .limit(10)

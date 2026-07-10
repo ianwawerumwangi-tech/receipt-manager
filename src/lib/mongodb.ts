@@ -1,5 +1,13 @@
 import mongoose from 'mongoose';
 
+import '@/models/User';
+import '@/models/Customer';
+import '@/models/Payment';
+import '@/models/SmsLog';
+import '@/models/Collection';
+import '@/models/Field';
+import '@/models/Record';
+
 const MONGODB_URI = process.env.MONGODB_URI!;
 
 if (!MONGODB_URI) {

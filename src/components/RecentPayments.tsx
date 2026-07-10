@@ -19,16 +19,15 @@ export function RecentPayments({ payments }: { payments: IPayment[] }) {
           <TableRow>
             <TableHead>Receipt</TableHead>
             <TableHead>Customer</TableHead>
-            <TableHead>Plot</TableHead>
             <TableHead>Amount</TableHead>
             <TableHead>SMS</TableHead>
             <TableHead>Date</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {payments.length === 0 ? (
+          {          payments.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+              <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                 No payments recorded yet
               </TableCell>
             </TableRow>
@@ -37,7 +36,6 @@ export function RecentPayments({ payments }: { payments: IPayment[] }) {
               <TableRow key={payment._id}>
                 <TableCell className="font-mono text-xs">{payment.receiptNumber}</TableCell>
                 <TableCell>{payment.customer?.name || 'N/A'}</TableCell>
-                <TableCell>{payment.plot?.plotNumber || 'N/A'}</TableCell>
                 <TableCell>KES {payment.amount.toLocaleString()}</TableCell>
                 <TableCell>
                   <Badge

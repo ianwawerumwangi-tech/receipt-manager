@@ -3,7 +3,6 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IPaymentDocument extends Document {
   receiptNumber: string;
   customer: mongoose.Types.ObjectId;
-  plot: mongoose.Types.ObjectId;
   amount: number;
   paymentMethod: string;
   reference: string;
@@ -19,7 +18,6 @@ const PaymentSchema = new Schema<IPaymentDocument>(
   {
     receiptNumber: { type: String, required: true, unique: true, trim: true },
     customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
-    plot: { type: Schema.Types.ObjectId, ref: 'Plot', required: true },
     amount: { type: Number, required: true },
     paymentMethod: { type: String, required: true, trim: true },
     reference: { type: String, trim: true },

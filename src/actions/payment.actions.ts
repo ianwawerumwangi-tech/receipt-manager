@@ -6,7 +6,6 @@ import { createPayment, sendPaymentSms, getPayments, getDashboardData, retrySms 
 
 export async function recordPayment(data: {
   customerId: string;
-  plotId: string;
   amount: number;
   paymentMethod: string;
   reference: string;

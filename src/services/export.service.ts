@@ -7,7 +7,6 @@ export async function exportPaymentsToExcel() {
 
   const payments = await Payment.find()
     .populate('customer', 'name phone')
-    .populate('plot', 'plotNumber project')
     .sort({ createdAt: -1 })
     .lean();
 

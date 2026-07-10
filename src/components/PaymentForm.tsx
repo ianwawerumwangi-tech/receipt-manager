@@ -15,7 +15,6 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { recordPayment } from '@/actions/payment.actions';
 import { getCustomers } from '@/actions/customer.actions';
-import { getAvailablePlots } from '@/actions/plot.actions';
 import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface Customer {
@@ -24,19 +23,11 @@ interface Customer {
   phone: string;
 }
 
-interface Plot {
-  _id: string;
-  plotNumber: string;
-  project: string;
-  price: number;
-}
-
 type Step = 'form' | 'saving' | 'result';
 
 export function PaymentForm() {
   const router = useRouter();
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [plots, setPlots] = useState<Plot[]>([]);
   const [step, setStep] = useState<Step>('form');
   const [result, setResult] = useState<{
     receiptNumber?: string;
@@ -46,7 +37,6 @@ export function PaymentForm() {
 
   const [form, setForm] = useState({
     customerId: '',
-    plotId: '',
     amount: '',
     paymentMethod: '',
     reference: '',
@@ -56,11 +46,9 @@ export function PaymentForm() {
 
   useEffect(() => {
     getCustomers().then(setCustomers);
-    getAvailablePlots().then(setPlots);
   }, []);
 
   const selectedCustomer = customers.find((c) => c._id === form.customerId);
-  const selectedPlot = plots.find((p) => p._id === form.plotId);
 
   const paymentMethodLabels: Record<string, string> = {
     cash: 'Cash',
@@ -76,7 +64,6 @@ export function PaymentForm() {
 
     const res = await recordPayment({
       customerId: form.customerId,
-      plotId: form.plotId,
       amount: Number(form.amount),
       paymentMethod: form.paymentMethod,
       reference: form.reference,
@@ -174,44 +161,17 @@ export function PaymentForm() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="plot">Plot</Label>
-          <Select
-            value={form.plotId}
-            onValueChange={(v) => v && setForm({ ...form, plotId: v })}
-            required
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select plot">
-                {selectedPlot ? `${selectedPlot.plotNumber} - ${selectedPlot.project} (KES ${selectedPlot.price.toLocaleString()})` : ''}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {plots.map((p) => (
-                <SelectItem key={p._id} value={p._id}>
-                  {p.plotNumber} - {p.project} (KES {p.price.toLocaleString()})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-2">
           <Label htmlFor="amount">Amount (KES)</Label>
           <Input
             id="amount"
             type="number"
             min="0"
             step="0.01"
-            placeholder={selectedPlot ? `Max: ${selectedPlot.price.toLocaleString()}` : '0.00'}
+            placeholder="0.00"
             value={form.amount}
             onChange={(e) => setForm({ ...form, amount: e.target.value })}
             required
           />
-          {selectedPlot && Number(form.amount) > selectedPlot.price && (
-            <p className="text-xs text-amber-600">
-              Amount exceeds plot price of KES {selectedPlot.price.toLocaleString()}
-            </p>
-          )}
         </div>
 
         <div className="space-y-2">

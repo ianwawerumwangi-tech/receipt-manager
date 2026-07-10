@@ -21,6 +21,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { createCustomer, updateCustomer, deleteCustomer } from '@/actions/customer.actions';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Plus, Pencil, Trash2, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -47,6 +48,7 @@ export function CustomersClient({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [form, setForm] = useState({ name: '', phone: '', email: '', nationalId: '', notes: '' });
+  const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null);
 
   const filtered = customers.filter(
     (c) =>
@@ -92,13 +94,13 @@ export function CustomersClient({
     setOpen(true);
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Delete this customer?')) {
-      const res = await deleteCustomer(id);
-      if (res.success) {
-        toast.success('Customer deleted');
-        setCustomers((prev) => prev.filter((c) => c._id !== id));
-      }
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const res = await deleteCustomer(deleteTarget._id);
+    if (res.success) {
+      toast.success('Customer deleted');
+      setCustomers((prev) => prev.filter((c) => c._id !== deleteTarget._id));
+      setDeleteTarget(null);
     }
   };
 
@@ -198,7 +200,7 @@ export function CustomersClient({
                       <Pencil className="h-3 w-3" />
                     </Button>
                     {isAdmin && (
-                      <Button variant="ghost" size="sm" onClick={() => handleDelete(customer._id)}>
+                      <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(customer)}>
                         <Trash2 className="h-3 w-3 text-destructive" />
                       </Button>
                     )}
@@ -209,6 +211,14 @@ export function CustomersClient({
           </TableBody>
         </Table>
       </div>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onConfirm={handleDelete}
+        title="Delete Customer"
+        message={`Delete customer "${deleteTarget?.name}"? This cannot be undone.`}
+        confirmLabel="Delete"
+      />
     </div>
   );
 }

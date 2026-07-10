@@ -17,23 +17,10 @@ export interface ICustomer {
   createdAt: Date;
 }
 
-export interface IPlot {
-  _id: string;
-  plotNumber: string;
-  project: string;
-  location: string;
-  size: number;
-  price: number;
-  status: 'available' | 'reserved' | 'sold';
-  customer?: string;
-  createdAt: Date;
-}
-
 export interface IPayment {
   _id: string;
   receiptNumber: string;
   customer: { _id: string; name: string; phone: string };
-  plot: { _id: string; plotNumber: string; project: string };
   amount: number;
   paymentMethod: string;
   reference: string;
@@ -62,3 +49,33 @@ export type DashboardData = {
   smsFailed: number;
   recentPayments: IPayment[];
 };
+
+export interface ICollection {
+  _id: string;
+  name: string;
+  description?: string;
+  createdBy: string;
+  createdAt: Date;
+  fieldCount?: number;
+  recordCount?: number;
+}
+
+export interface IField {
+  _id: string;
+  collectionId: string;
+  name: string;
+  type: 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';
+  required: boolean;
+  order: number;
+  targetCollectionId?: string;
+}
+
+export interface IRecord {
+  _id: string;
+  collectionId: string;
+  data: Record<string, unknown>;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export type FieldType = 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';

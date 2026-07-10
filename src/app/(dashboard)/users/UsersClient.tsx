@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { createUser, deleteUser } from '@/actions/user.actions';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -44,6 +45,7 @@ export function UsersClient({ users: initial }: { users: User[] }) {
   const [users, setUsers] = useState(initial);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', password: '', role: 'staff' as 'admin' | 'staff' });
+  const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,13 +60,13 @@ export function UsersClient({ users: initial }: { users: User[] }) {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Delete this user?')) {
-      const res = await deleteUser(id);
-      if (res.success) {
-        toast.success('User deleted');
-        setUsers((prev) => prev.filter((u) => u._id !== id));
-      }
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const res = await deleteUser(deleteTarget._id);
+    if (res.success) {
+      toast.success('User deleted');
+      setUsers((prev) => prev.filter((u) => u._id !== deleteTarget._id));
+      setDeleteTarget(null);
     }
   };
 
@@ -153,7 +155,7 @@ export function UsersClient({ users: initial }: { users: User[] }) {
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <Button variant="ghost" size="sm" onClick={() => handleDelete(user._id)}>
+                  <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(user)}>
                     <Trash2 className="h-3 w-3 text-destructive" />
                   </Button>
                 </TableCell>
@@ -162,6 +164,14 @@ export function UsersClient({ users: initial }: { users: User[] }) {
           </TableBody>
         </Table>
       </div>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onConfirm={handleDelete}
+        title="Delete User"
+        message={`Delete user "${deleteTarget?.name}"? This cannot be undone.`}
+        confirmLabel="Delete"
+      />
     </div>
   );
 }

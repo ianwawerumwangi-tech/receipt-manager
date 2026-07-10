@@ -43,7 +43,6 @@ export function buildSmsTemplate(params: {
   customerName: string;
   amount: number;
   receiptNumber: string;
-  plot: string;
 }): string {
   return `Dear ${params.customerName},
 
@@ -52,9 +51,6 @@ KES ${params.amount.toLocaleString()}
 
 Receipt No:
 ${params.receiptNumber}
-
-Plot:
-${params.plot}
 
 Thank you.
 

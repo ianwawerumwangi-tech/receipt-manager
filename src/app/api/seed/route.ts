@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { dbConnect } from '@/lib/mongodb';
 import { User } from '@/models/User';
 import { Customer } from '@/models/Customer';
-import { Plot } from '@/models/Plot';
 import { hashPassword } from '@/lib/auth';
 
 export async function GET() {
@@ -38,16 +37,7 @@ export async function GET() {
       ]);
     }
 
-    const plotCount = await Plot.countDocuments();
-    if (plotCount === 0) {
-      await Plot.create([
-        { plotNumber: 'PLT-001', project: 'Green Valley', location: 'Nairobi', size: 0.25, price: 2500000, status: 'available' },
-        { plotNumber: 'PLT-002', project: 'Green Valley', location: 'Nairobi', size: 0.5, price: 4500000, status: 'available' },
-        { plotNumber: 'PLT-003', project: 'Sunset Hills', location: 'Kiambu', size: 0.3, price: 3200000, status: 'available' },
-        { plotNumber: 'PLT-004', project: 'Sunset Hills', location: 'Kiambu', size: 1.0, price: 8000000, status: 'available' },
-        { plotNumber: 'PLT-005', project: 'Riverside Estate', location: 'Machakos', size: 0.5, price: 5000000, status: 'available' },
-      ]);
-    }
+
 
     return NextResponse.json({
       message: 'Seed data created successfully',
