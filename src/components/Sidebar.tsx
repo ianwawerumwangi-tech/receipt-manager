@@ -17,8 +17,6 @@ import { logout } from '@/actions/auth.actions';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/payments', label: 'Payments', icon: Receipt },
-  { href: '/customers', label: 'Customers', icon: Users },
   { href: '/collections', label: 'Collections', icon: Layers },
   { href: '/users', label: 'Users', icon: UserCog },
 ];

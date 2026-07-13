@@ -21,11 +21,9 @@ export default async function DashboardPage() {
           </p>
         </div>
         <div className="flex gap-3">
-          <ExportButton />
-          <Link href="/payments/new">
+          <Link href="/collections">
             <Button>
-              <PlusCircle className="h-4 w-4 mr-2" />
-              New Payment
+              Go to Collections
             </Button>
           </Link>
         </div>

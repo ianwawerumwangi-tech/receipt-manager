@@ -2,6 +2,7 @@ import { dbConnect } from '@/lib/mongodb';
 import { Payment, IPaymentDocument } from '@/models/Payment';
 import { Customer } from '@/models/Customer';
 import { SmsLog } from '@/models/SmsLog';
+import { Record as RecordModel } from '@/models/Record';
 import { buildSmsTemplate, sendSms } from '@/lib/sms';
 import { serialize } from '@/lib/utils';
 
@@ -123,33 +124,65 @@ export async function getPayments(options?: {
 export async function getDashboardData() {
   await dbConnect();
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const records = await RecordModel.find().sort({ createdAt: -1 }).lean();
 
-  const [todayPayments, todayRevenue, smsSent, smsFailed, recentPayments] = await Promise.all([
-    Payment.countDocuments({ paymentDate: { $gte: today, $lt: tomorrow } }),
-    Payment.aggregate([
-      { $match: { paymentDate: { $gte: today, $lt: tomorrow } } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]),
-    Payment.countDocuments({ smsStatus: 'sent', paymentDate: { $gte: today, $lt: tomorrow } }),
-    Payment.countDocuments({ smsStatus: 'failed', paymentDate: { $gte: today, $lt: tomorrow } }),
-    Payment.find()
-      .populate('customer', 'name phone')
-      .populate('recordedBy', 'name')
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .lean(),
-  ]);
+  const getRecordValue = (data: any, patterns: string[]) => {
+    const obj = data instanceof Map ? Object.fromEntries(data) : (data as Record<string, any>);
+    if (!obj) return null;
+    for (const key of Object.keys(obj)) {
+      if (patterns.includes(key.toUpperCase())) {
+        return obj[key];
+      }
+    }
+    return null;
+  };
+
+  const rctPatterns = ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'];
+  const namePatterns = ['NAME', 'CUSTOMER NAME', 'CUSTOMER'];
+  const amountPatterns = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
+  const smsPatterns = ['SMS STATUS', 'SMS_STATUS'];
+
+  let totalPaymentsCount = 0;
+  let totalRevenue = 0;
+  let smsSent = 0;
+  let smsFailed = 0;
+
+  const mappedPayments: any[] = [];
+
+  for (const r of records) {
+    const data = r.data;
+    const rct = getRecordValue(data, rctPatterns);
+    const name = getRecordValue(data, namePatterns) || 'N/A';
+    const amount = Number(getRecordValue(data, amountPatterns) || 0);
+    const sms = String(getRecordValue(data, smsPatterns) || 'pending').toLowerCase();
+
+    if (rct) {
+      totalPaymentsCount++;
+    }
+    totalRevenue += amount;
+
+    if (sms === 'sent') {
+      smsSent++;
+    } else if (sms === 'failed') {
+      smsFailed++;
+    }
+
+    mappedPayments.push({
+      _id: r._id.toString(),
+      receiptNumber: rct || 'N/A',
+      customer: { name },
+      amount,
+      smsStatus: sms,
+      createdAt: r.createdAt,
+    });
+  }
 
   return {
-    todayPayments,
-    todayRevenue: todayRevenue[0]?.total || 0,
+    todayPayments: totalPaymentsCount,
+    todayRevenue: totalRevenue,
     smsSent,
     smsFailed,
-    recentPayments: serialize(recentPayments),
+    recentPayments: serialize(mappedPayments.slice(0, 10)),
   };
 }
 
