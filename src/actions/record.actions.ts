@@ -6,6 +6,7 @@ import { Record } from '@/models/Record';
 import { Field } from '@/models/Field';
 import { getSession } from '@/lib/auth';
 import { serialize } from '@/lib/utils';
+import { sendSms } from '@/lib/sms';
 
 async function validateAndFormatReceiptNumber(
   collectionId: string,
@@ -188,4 +189,129 @@ export async function updateRecordsBulk(
 
   revalidatePath(`/collections/${collectionId}`);
   return { success: true };
+}
+
+export async function sendRecordSmsAction(recordId: string, collectionId: string) {
+  const session = await getSession();
+  if (!session) return { error: 'Unauthorized' };
+
+  await dbConnect();
+  
+  const record = await Record.findById(recordId);
+  if (!record) return { error: 'Record not found' };
+
+  const fields = await Field.find({ collectionId }).lean();
+  
+  // Find name, phone, amount, and receipt number fields
+  const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
+  const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
+  const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
+  const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+  const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
+
+  if (!phoneField) {
+    return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
+  }
+
+  const phone = String(record.data.get(phoneField.name) || '').trim();
+  const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
+  const amount = Number(record.data.get(amountField?.name || '') || 0);
+  const rct = String(record.data.get(rctField?.name || '') || '').trim();
+
+  if (!phone) {
+    return { error: 'Phone number is empty for this record.' };
+  }
+
+  const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}. Thank you.`;
+
+  const result = await sendSms(phone, message);
+
+  // If SMS Status field doesn't exist, dynamically add it to the schema
+  let statusFieldName = 'SMS Status';
+  if (!smsStatusField) {
+    await Field.create({
+      collectionId,
+      name: 'SMS Status',
+      type: 'text',
+      required: false
+    });
+  } else {
+    statusFieldName = smsStatusField.name;
+  }
+
+  // Update record's data map
+  record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
+  await record.save();
+
+  revalidatePath(`/collections/${collectionId}`);
+
+  if (!result.success) {
+    return { error: result.error || 'Failed to send SMS' };
+  }
+
+  return { success: true };
+}
+
+export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId: string) {
+  const session = await getSession();
+  if (!session) return { error: 'Unauthorized' };
+
+  await dbConnect();
+
+  const fields = await Field.find({ collectionId }).lean();
+  const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
+  const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
+  const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
+  const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+  const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
+
+  if (!phoneField) {
+    return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
+  }
+
+  // Check or create SMS Status field
+  let statusFieldName = 'SMS Status';
+  if (!smsStatusField) {
+    await Field.create({
+      collectionId,
+      name: 'SMS Status',
+      type: 'text',
+      required: false
+    });
+  } else {
+    statusFieldName = smsStatusField.name;
+  }
+
+  const records = await Record.find({ _id: { $in: recordIds } });
+  let successCount = 0;
+  let failCount = 0;
+
+  for (const record of records) {
+    const phone = String(record.data.get(phoneField.name) || '').trim();
+    const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
+    const amount = Number(record.data.get(amountField?.name || '') || 0);
+    const rct = String(record.data.get(rctField?.name || '') || '').trim();
+
+    if (!phone) {
+      record.data.set(statusFieldName, 'failed');
+      await record.save();
+      failCount++;
+      continue;
+    }
+
+    const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}. Thank you.`;
+    const result = await sendSms(phone, message);
+
+    record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
+    await record.save();
+
+    if (result.success) {
+      successCount++;
+    } else {
+      failCount++;
+    }
+  }
+
+  revalidatePath(`/collections/${collectionId}`);
+  return { success: true, successCount, failCount };
 }

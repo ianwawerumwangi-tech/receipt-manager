@@ -47,6 +47,8 @@ import {
   deleteRecord,
   getCollectionRecords,
   updateRecordsBulk,
+  sendRecordSmsAction,
+  sendRecordsSmsBulkAction,
 } from '@/actions/record.actions';
 import {
   updateCollection,
@@ -59,6 +61,7 @@ import {
   Trash2,
   ChevronLeft,
   Loader2,
+  MessageSquare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -135,6 +138,44 @@ export function CollectionViewClient({
   const [focusedCell, setFocusedCell] = useState<{ recordId: string; fieldId: string } | null>(null);
   const [editingCell, setEditingCell] = useState<{ recordId: string; fieldId: string } | null>(null);
   const [savingBulk, setSavingBulk] = useState(false);
+
+  // SMS States & Handlers
+  const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
+  const [sendingSmsBulk, setSendingSmsBulk] = useState(false);
+
+  const handleSendRowSms = async (recordId: string) => {
+    toast.promise(
+      sendRecordSmsAction(recordId, collection._id).then((res) => {
+        if (res.error) throw new Error(res.error);
+        return res;
+      }),
+      {
+        loading: 'Sending SMS...',
+        success: 'SMS sent successfully!',
+        error: (err: any) => err.message || 'Failed to send SMS',
+      }
+    );
+  };
+
+  const handleBulkSendSms = async () => {
+    if (selectedRecordIds.length === 0) return;
+    setSendingSmsBulk(true);
+    try {
+      const res = await sendRecordsSmsBulkAction(selectedRecordIds, collection._id);
+      if (res.success) {
+        toast.success(`SMS send complete: ${res.successCount} sent, ${res.failCount} failed.`);
+        setSelectedRecordIds([]);
+        router.refresh();
+      } else {
+        toast.error(res.error || 'Failed to send bulk SMS');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('An error occurred during bulk SMS sending');
+    } finally {
+      setSendingSmsBulk(false);
+    }
+  };
 
   // Live Auto-Calculation Engine
   const getCalculatedValue = useCallback((recordId: string, recordData: Record<string, any>, fieldName: string): any => {
@@ -596,6 +637,12 @@ export function CollectionViewClient({
 
   const renderCellValue = (field: FieldItem, value: unknown) => {
     if (value === undefined || value === null || value === '') return <span className="text-muted-foreground">-</span>;
+    if (field.name.toUpperCase() === 'SMS STATUS') {
+      const valStr = String(value).toLowerCase();
+      if (valStr === 'sent') return <Badge variant="default">sent</Badge>;
+      if (valStr === 'failed') return <Badge variant="destructive">failed</Badge>;
+      return <Badge variant="secondary">{valStr}</Badge>;
+    }
     if (field.type === 'boolean') {
       return value === true ? <Badge variant="default">Yes</Badge> : <Badge variant="secondary">No</Badge>;
     }
@@ -815,6 +862,18 @@ export function CollectionViewClient({
                   </>
                 ) : (
                   <>
+                    {selectedRecordIds.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="default"
+                        onClick={handleBulkSendSms}
+                        disabled={sendingSmsBulk}
+                        className="bg-green-600 hover:bg-green-700 text-white"
+                      >
+                        {sendingSmsBulk && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                        Send SMS ({selectedRecordIds.length})
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"
@@ -876,15 +935,41 @@ export function CollectionViewClient({
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12">
+                        <Checkbox
+                          checked={selectedRecordIds.length === records.length && records.length > 0}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedRecordIds(records.map((r) => r._id));
+                            } else {
+                              setSelectedRecordIds([]);
+                            }
+                          }}
+                          disabled={isEditMode}
+                        />
+                      </TableHead>
                       {fields.map((field) => (
                         <TableHead key={field._id}>{field.name}</TableHead>
                       ))}
-                      <TableHead className="w-20">Actions</TableHead>
+                      <TableHead className="w-28">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {records.map((record, rowIndex) => (
                       <TableRow key={record._id} className={isEditMode ? 'hover:bg-transparent' : ''}>
+                        <TableCell className="w-12">
+                          <Checkbox
+                            checked={selectedRecordIds.includes(record._id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setSelectedRecordIds([...selectedRecordIds, record._id]);
+                              } else {
+                                setSelectedRecordIds(selectedRecordIds.filter((id) => id !== record._id));
+                              }
+                            }}
+                            disabled={isEditMode}
+                          />
+                        </TableCell>
                         {fields.map((field, colIndex) => (
                           <TableCell key={field._id} className={isEditMode ? 'p-1' : ''}>
                             {isEditMode ? (
@@ -896,6 +981,15 @@ export function CollectionViewClient({
                         ))}
                         <TableCell>
                           <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Send Receipt SMS"
+                              onClick={() => handleSendRowSms(record._id)}
+                              disabled={isEditMode}
+                            >
+                              <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                            </Button>
                             <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)} disabled={isEditMode}>
                               <Pencil className="h-3 w-3" />
                             </Button>
