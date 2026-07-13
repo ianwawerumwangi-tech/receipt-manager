@@ -28,6 +28,7 @@ import {
 import { Plus, Trash2, FolderOpen, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { ImportDialog } from './ImportDialog';
 
 interface CollectionItem {
   _id: string;
@@ -71,7 +72,8 @@ export function CollectionsClient({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <ImportDialog onSuccess={() => router.refresh()} />
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button><Plus className="h-4 w-4 mr-2" />New Collection</Button>} />
           <DialogContent>

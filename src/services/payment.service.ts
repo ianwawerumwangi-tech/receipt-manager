@@ -5,13 +5,22 @@ import { SmsLog } from '@/models/SmsLog';
 import { buildSmsTemplate, sendSms } from '@/lib/sms';
 import { serialize } from '@/lib/utils';
 
-function generateReceiptNumber(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const rand = String(Math.floor(Math.random() * 90000) + 10000);
-  return `RCT-${y}${m}${d}-${rand}`;
+async function generateUniqueReceiptNumber(): Promise<string> {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let isUnique = false;
+  let receiptNumber = '';
+  
+  while (!isUnique) {
+    receiptNumber = '';
+    for (let i = 0; i < 10; i++) {
+      receiptNumber += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const existing = await Payment.findOne({ receiptNumber });
+    if (!existing) {
+      isUnique = true;
+    }
+  }
+  return receiptNumber;
 }
 
 export async function createPayment(data: {
@@ -25,7 +34,7 @@ export async function createPayment(data: {
 }) {
   await dbConnect();
 
-  const receiptNumber = generateReceiptNumber();
+  const receiptNumber = await generateUniqueReceiptNumber();
 
   const payment = await Payment.create({
     receiptNumber,

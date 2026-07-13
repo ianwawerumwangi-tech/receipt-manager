@@ -13,9 +13,46 @@ export async function getCollections() {
   if (!session) return [];
 
   await dbConnect();
-  const collections = await Collection.find({ createdBy: session.userId })
+  let collections = await Collection.find({ createdBy: session.userId })
     .sort({ createdAt: -1 })
     .lean();
+
+  if (collections.length === 0) {
+    const defaultCollection = await Collection.create({
+      name: 'Anita Plot Receipts',
+      description: 'Default collection matching ANITA SAMPLE SHEET.xlsx structure',
+      createdBy: session.userId,
+    });
+
+    const defaultFields = [
+      { name: 'HSE NO', type: 'text', required: false, order: 0 },
+      { name: 'NAME', type: 'text', required: false, order: 1 },
+      { name: 'PHONE NO', type: 'phone', required: false, order: 2 },
+      { name: 'DEPOSIT PAID', type: 'number', required: false, order: 3 },
+      { name: 'MONTHLY RENT', type: 'number', required: false, order: 4 },
+      { name: 'BAL B/D', type: 'number', required: false, order: 5 },
+      { name: 'RENT DUE', type: 'number', required: false, order: 6 },
+      { name: 'RENT PAID', type: 'number', required: false, order: 7 },
+      { name: 'RCT NO', type: 'text', required: false, order: 8 },
+      { name: 'PERIOD', type: 'text', required: false, order: 9 },
+      { name: 'BALANCE', type: 'number', required: false, order: 10 },
+      { name: 'STATUS', type: 'text', required: false, order: 11 },
+      { name: 'FORMS', type: 'text', required: false, order: 12 },
+    ];
+
+    await Promise.all(
+      defaultFields.map((field) =>
+        Field.create({
+          collectionId: defaultCollection._id,
+          ...field,
+        })
+      )
+    );
+
+    collections = await Collection.find({ createdBy: session.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
 
   const result = await Promise.all(
     collections.map(async (col) => {

@@ -46,6 +46,7 @@ import {
   updateRecord,
   deleteRecord,
   getCollectionRecords,
+  updateRecordsBulk,
 } from '@/actions/record.actions';
 import {
   updateCollection,
@@ -57,10 +58,12 @@ import {
   Pencil,
   Trash2,
   ChevronLeft,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { ImportDialog } from '../ImportDialog';
 
 type FieldType = 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';
 
@@ -125,6 +128,244 @@ export function CollectionViewClient({
   const [nameForm, setNameForm] = useState({ name: collection.name, description: collection.description || '' });
   const [deleteFieldTarget, setDeleteFieldTarget] = useState<FieldItem | null>(null);
   const [deleteRecordTarget, setDeleteRecordTarget] = useState<RecordItem | null>(null);
+
+  // Grid Edit Mode States
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [draftRecords, setDraftRecords] = useState<Record<string, Record<string, any>>>({});
+  const [focusedCell, setFocusedCell] = useState<{ recordId: string; fieldId: string } | null>(null);
+  const [editingCell, setEditingCell] = useState<{ recordId: string; fieldId: string } | null>(null);
+  const [savingBulk, setSavingBulk] = useState(false);
+
+  // Live Auto-Calculation Engine
+  const getCalculatedValue = useCallback((recordId: string, recordData: Record<string, any>, fieldName: string): any => {
+    const draft = draftRecords[recordId] || {};
+    
+    const hasDeposit = fields.some(f => f.name.toUpperCase() === 'DEPOSIT PAID');
+    const hasRent = fields.some(f => f.name.toUpperCase() === 'MONTHLY RENT');
+    const hasBalBD = fields.some(f => f.name.toUpperCase() === 'BAL B/D');
+    const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
+    const hasPaid = fields.some(f => f.name.toUpperCase() === 'RENT PAID');
+    const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
+
+    const getValue = (name: string) => {
+      if (name in draft) return draft[name];
+      return recordData[name];
+    };
+
+    if (fieldName.toUpperCase() === 'RENT DUE' && hasDue && (hasDeposit || hasRent || hasBalBD)) {
+      const dep = Number(getValue('DEPOSIT PAID') ?? 0);
+      const rent = Number(getValue('MONTHLY RENT') ?? 0);
+      const balBD = Number(getValue('BAL B/D') ?? 0);
+      return dep + rent + balBD;
+    }
+
+    if (fieldName.toUpperCase() === 'BALANCE' && hasBal && hasDue) {
+      const due = Number(getCalculatedValue(recordId, recordData, 'RENT DUE') ?? 0);
+      const paid = Number(getValue('RENT PAID') ?? 0);
+      return due - paid;
+    }
+
+    return getValue(fieldName);
+  }, [draftRecords, fields]);
+
+  // Keyboard navigation & Editing cell commits
+  const handleCellKeyDown = (
+    e: React.KeyboardEvent,
+    recordId: string,
+    field: FieldItem,
+    rowIndex: number,
+    colIndex: number
+  ) => {
+    if (editingCell?.recordId === recordId && editingCell.fieldId === field._id) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setEditingCell(null);
+        if (rowIndex < records.length - 1) {
+          setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: field._id });
+        }
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        setEditingCell(null);
+        if (colIndex < fields.length - 1) {
+          setFocusedCell({ recordId, fieldId: fields[colIndex + 1]._id });
+        } else if (rowIndex < records.length - 1) {
+          setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: fields[0]._id });
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setEditingCell(null);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (rowIndex > 0) {
+        setFocusedCell({ recordId: records[rowIndex - 1]._id, fieldId: field._id });
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (rowIndex < records.length - 1) {
+        setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: field._id });
+      }
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (colIndex > 0) {
+        setFocusedCell({ recordId, fieldId: fields[colIndex - 1]._id });
+      }
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (colIndex < fields.length - 1) {
+        setFocusedCell({ recordId, fieldId: fields[colIndex + 1]._id });
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      setEditingCell({ recordId, fieldId: field._id });
+    }
+  };
+
+  const handleDraftChange = (recordId: string, fieldName: string, val: any) => {
+    const prev = draftRecords[recordId] || {};
+    setDraftRecords({
+      ...draftRecords,
+      [recordId]: {
+        ...prev,
+        [fieldName]: val,
+      },
+    });
+  };
+
+  // Bulk save action
+  const handleSaveBulk = async () => {
+    setSavingBulk(true);
+    try {
+      const updates = Object.entries(draftRecords).map(([recordId, data]) => {
+        const originalRecord = records.find((r) => r._id === recordId);
+        const originalData = originalRecord ? originalRecord.data : {};
+        const merged = { ...originalData, ...data };
+        
+        const hasDeposit = fields.some(f => f.name.toUpperCase() === 'DEPOSIT PAID');
+        const hasRent = fields.some(f => f.name.toUpperCase() === 'MONTHLY RENT');
+        const hasBalBD = fields.some(f => f.name.toUpperCase() === 'BAL B/D');
+        const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
+        const hasPaid = fields.some(f => f.name.toUpperCase() === 'RENT PAID');
+        const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
+
+        if (hasDue && (hasDeposit || hasRent || hasBalBD)) {
+          const dep = Number(merged['DEPOSIT PAID'] ?? 0);
+          const rent = Number(merged['MONTHLY RENT'] ?? 0);
+          const balBD = Number(merged['BAL B/D'] ?? 0);
+          merged['RENT DUE'] = dep + rent + balBD;
+        }
+
+        if (hasBal && hasDue) {
+          const due = Number(merged['RENT DUE'] ?? 0);
+          const paid = Number(merged['RENT PAID'] ?? 0);
+          merged['BALANCE'] = due - paid;
+        }
+
+        return {
+          id: recordId,
+          data: merged,
+        };
+      });
+
+      const res = await updateRecordsBulk(collection._id, updates);
+      if (res.success) {
+        toast.success('All changes saved successfully');
+        setDraftRecords({});
+        setIsEditMode(false);
+        router.refresh();
+      } else {
+        toast.error(res.error || 'Failed to save changes');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('An error occurred while saving');
+    } finally {
+      setSavingBulk(false);
+    }
+  };
+
+  const renderEditableCell = (
+    record: RecordItem,
+    field: FieldItem,
+    rowIndex: number,
+    colIndex: number
+  ) => {
+    const recordId = record._id;
+    const isFocused = focusedCell?.recordId === recordId && focusedCell.fieldId === field._id;
+    const isEditing = editingCell?.recordId === recordId && editingCell.fieldId === field._id;
+    const currentVal = getCalculatedValue(recordId, record.data, field.name);
+
+    if (isEditing) {
+      if (field.type === 'boolean') {
+        return (
+          <Checkbox
+            checked={currentVal === true}
+            onCheckedChange={(checked) => handleDraftChange(recordId, field.name, checked === true)}
+            onBlur={() => setEditingCell(null)}
+            autoFocus
+          />
+        );
+      }
+
+      if (field.type === 'number') {
+        return (
+          <Input
+            type="number"
+            value={currentVal ?? ''}
+            onChange={(e) => handleDraftChange(recordId, field.name, e.target.value !== '' ? Number(e.target.value) : '')}
+            onBlur={() => setEditingCell(null)}
+            className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
+            autoFocus
+          />
+        );
+      }
+
+      if (field.type === 'date') {
+        return (
+          <Input
+            type="date"
+            value={currentVal ?? ''}
+            onChange={(e) => handleDraftChange(recordId, field.name, e.target.value)}
+            onBlur={() => setEditingCell(null)}
+            className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
+            autoFocus
+          />
+        );
+      }
+
+      return (
+        <Input
+          value={currentVal ?? ''}
+          onChange={(e) => handleDraftChange(recordId, field.name, e.target.value)}
+          onBlur={() => setEditingCell(null)}
+          className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
+          autoFocus
+        />
+      );
+    }
+
+    return (
+      <div
+        tabIndex={0}
+        onFocus={() => setFocusedCell({ recordId, fieldId: field._id })}
+        onKeyDown={(e) => handleCellKeyDown(e, recordId, field, rowIndex, colIndex)}
+        onDoubleClick={() => {
+          setFocusedCell({ recordId, fieldId: field._id });
+          setEditingCell({ recordId, fieldId: field._id });
+        }}
+        className={`w-full h-full min-h-8 py-1.5 px-2.5 rounded cursor-pointer outline-none transition-all ${
+          isFocused 
+            ? 'ring-2 ring-primary ring-offset-1 bg-primary/5' 
+            : 'hover:bg-muted/50'
+        }`}
+      >
+        {renderCellValue(field, currentVal)}
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (fieldDialogOpen) {
@@ -215,6 +456,8 @@ export function CollectionViewClient({
         setRecordDialogOpen(false);
         resetRecordForm();
         router.refresh();
+      } else {
+        toast.error(res.error || 'Failed to update record');
       }
     } else {
       const res = await createRecord({
@@ -226,6 +469,8 @@ export function CollectionViewClient({
         setRecordDialogOpen(false);
         resetRecordForm();
         router.refresh();
+      } else {
+        toast.error(res.error || 'Failed to create record');
       }
     }
   };
@@ -544,35 +789,77 @@ export function CollectionViewClient({
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg">Records</CardTitle>
-              <Dialog open={recordDialogOpen} onOpenChange={(open) => { setRecordDialogOpen(open); if (!open) resetRecordForm(); }}>
-                <DialogTrigger render={
-                  <Button size="sm" disabled={fields.length === 0}>
-                    <Plus className="h-4 w-4 mr-1" />
-                    Add Record
-                  </Button>
-                } />
-                <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle>{editingRecord ? 'Edit Record' : 'Add Record'}</DialogTitle>
-                  </DialogHeader>
-                  <form onSubmit={handleRecordSubmit} className="space-y-4">
-                    {fields.map((field) => (
-                      <div key={field._id} className="space-y-2">
-                        <Label htmlFor={`record-${field._id}`}>
-                          {field.name}
-                          {field.required && <span className="text-destructive ml-1">*</span>}
-                        </Label>
-                        {renderFieldInput(field, recordForm[field.name] ?? '', (val) =>
-                          setRecordForm({ ...recordForm, [field.name]: val })
-                        )}
-                      </div>
-                    ))}
-                    <Button type="submit" className="w-full">
-                      {editingRecord ? 'Update Record' : 'Add Record'}
+              <div className="flex items-center gap-2">
+                {isEditMode ? (
+                  <>
+                    <Button 
+                      size="sm" 
+                      variant="default" 
+                      onClick={handleSaveBulk}
+                      disabled={savingBulk || Object.keys(draftRecords).length === 0}
+                    >
+                      {savingBulk && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                      Save Changes ({Object.keys(draftRecords).length})
                     </Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
+                    <Button 
+                      size="sm" 
+                      variant="outline" 
+                      onClick={() => {
+                        setDraftRecords({});
+                        setIsEditMode(false);
+                      }}
+                      disabled={savingBulk}
+                    >
+                      Discard Changes
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setIsEditMode(true)}
+                      disabled={records.length === 0}
+                    >
+                      Grid Edit Mode
+                    </Button>
+                    <ImportDialog
+                      collectionId={collection._id}
+                      collectionFields={fields}
+                      onSuccess={() => router.refresh()}
+                    />
+                    <Dialog open={recordDialogOpen} onOpenChange={(open) => { setRecordDialogOpen(open); if (!open) resetRecordForm(); }}>
+                      <DialogTrigger render={
+                        <Button size="sm" disabled={fields.length === 0}>
+                          <Plus className="h-4 w-4 mr-1" />
+                          Add Record
+                        </Button>
+                      } />
+                      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+                        <DialogHeader>
+                          <DialogTitle>{editingRecord ? 'Edit Record' : 'Add Record'}</DialogTitle>
+                        </DialogHeader>
+                        <form onSubmit={handleRecordSubmit} className="space-y-4">
+                          {fields.map((field) => (
+                            <div key={field._id} className="space-y-2">
+                              <Label htmlFor={`record-${field._id}`}>
+                                {field.name}
+                                {field.required && <span className="text-destructive ml-1">*</span>}
+                              </Label>
+                              {renderFieldInput(field, recordForm[field.name] ?? '', (val) =>
+                                setRecordForm({ ...recordForm, [field.name]: val })
+                              )}
+                            </div>
+                          ))}
+                          <Button type="submit" className="w-full">
+                            {editingRecord ? 'Update Record' : 'Add Record'}
+                          </Button>
+                        </form>
+                      </DialogContent>
+                    </Dialog>
+                  </>
+                )}
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -596,19 +883,23 @@ export function CollectionViewClient({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {records.map((record) => (
-                      <TableRow key={record._id}>
-                        {fields.map((field) => (
-                          <TableCell key={field._id}>
-                            {renderCellValue(field, record.data[field.name])}
+                    {records.map((record, rowIndex) => (
+                      <TableRow key={record._id} className={isEditMode ? 'hover:bg-transparent' : ''}>
+                        {fields.map((field, colIndex) => (
+                          <TableCell key={field._id} className={isEditMode ? 'p-1' : ''}>
+                            {isEditMode ? (
+                              renderEditableCell(record, field, rowIndex, colIndex)
+                            ) : (
+                              renderCellValue(field, getCalculatedValue(record._id, record.data, field.name))
+                            )}
                           </TableCell>
                         ))}
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)}>
+                            <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)} disabled={isEditMode}>
                               <Pencil className="h-3 w-3" />
                             </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setDeleteRecordTarget(record)}>
+                            <Button variant="ghost" size="sm" onClick={() => setDeleteRecordTarget(record)} disabled={isEditMode}>
                               <Trash2 className="h-3 w-3 text-destructive" />
                             </Button>
                           </div>
