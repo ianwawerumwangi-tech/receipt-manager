@@ -285,6 +285,7 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   const records = await Record.find({ _id: { $in: recordIds } });
   let successCount = 0;
   let failCount = 0;
+  const errors: string[] = [];
 
   for (const record of records) {
     const phone = String(record.data.get(phoneField.name) || '').trim();
@@ -296,6 +297,7 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
       record.data.set(statusFieldName, 'failed');
       await record.save();
       failCount++;
+      errors.push(`${name}: Phone number is empty.`);
       continue;
     }
 
@@ -309,9 +311,42 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
       successCount++;
     } else {
       failCount++;
+      errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
     }
   }
 
   revalidatePath(`/collections/${collectionId}`);
-  return { success: true, successCount, failCount };
+  return { success: true, successCount, failCount, errors: errors.length > 0 ? errors : undefined };
+}
+
+export async function createRecordsBulk(
+  collectionId: string,
+  recordsData: Record<string, unknown>[]
+) {
+  const session = await getSession();
+  if (!session) return { error: 'Unauthorized' };
+
+  await dbConnect();
+
+  // Validate all records before committing
+  for (const fieldData of recordsData) {
+    const valRes = await validateAndFormatReceiptNumber(collectionId, null, fieldData);
+    if (valRes.error) {
+      return { error: valRes.error };
+    }
+  }
+
+  // Insert all records
+  const newRecords = recordsData.map((fieldData) => ({
+    collectionId,
+    data: fieldData,
+    createdBy: session.userId,
+  }));
+
+  if (newRecords.length > 0) {
+    await Record.insertMany(newRecords);
+  }
+
+  revalidatePath(`/collections/${collectionId}`);
+  return { success: true };
 }

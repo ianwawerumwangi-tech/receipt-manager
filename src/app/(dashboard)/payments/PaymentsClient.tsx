@@ -15,19 +15,28 @@ import { ExportButton } from '@/components/ExportButton';
 import { retryPaymentSms } from '@/actions/payment.actions';
 import { RefreshCw } from 'lucide-react';
 import type { IPayment } from '@/types';
+import { toast } from 'sonner';
 
 export function PaymentsClient({ payments: initial }: { payments: IPayment[] }) {
   const [payments, setPayments] = useState(initial);
 
   const handleRetrySms = async (paymentId: string) => {
-    const result = await retryPaymentSms(paymentId);
-    if (result.success) {
-      setPayments((prev) =>
-        prev.map((p) =>
-          p._id === paymentId ? { ...p, smsStatus: 'sent' as const } : p
-        )
-      );
-    }
+    toast.promise(
+      retryPaymentSms(paymentId).then((res) => {
+        if (!res.success) throw new Error(res.error || 'Failed to send SMS');
+        setPayments((prev) =>
+          prev.map((p) =>
+            p._id === paymentId ? { ...p, smsStatus: 'sent' as const } : p
+          )
+        );
+        return res;
+      }),
+      {
+        loading: 'Retrying SMS sending...',
+        success: 'SMS sent successfully!',
+        error: (err: any) => err.message || 'Failed to send SMS',
+      }
+    );
   };
 
   return (

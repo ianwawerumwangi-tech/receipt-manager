@@ -30,7 +30,6 @@ const PaymentSchema = new Schema<IPaymentDocument>(
   { timestamps: true }
 );
 
-PaymentSchema.index({ receiptNumber: 1 });
 PaymentSchema.index({ paymentDate: -1 });
 
 export const Payment =

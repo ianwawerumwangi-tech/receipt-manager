@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table,
   TableBody,
@@ -47,6 +47,7 @@ import {
   deleteRecord,
   getCollectionRecords,
   updateRecordsBulk,
+  createRecordsBulk,
   sendRecordSmsAction,
   sendRecordsSmsBulkAction,
 } from '@/actions/record.actions';
@@ -138,6 +139,19 @@ export function CollectionViewClient({
   const [focusedCell, setFocusedCell] = useState<{ recordId: string; fieldId: string } | null>(null);
   const [editingCell, setEditingCell] = useState<{ recordId: string; fieldId: string } | null>(null);
   const [savingBulk, setSavingBulk] = useState(false);
+  const [newRows, setNewRows] = useState<{ _id: string; data: Record<string, any> }[]>([]);
+
+  const combinedRows = useMemo(() => {
+    return [
+      ...records,
+      ...newRows.map((nr) => ({
+        _id: nr._id,
+        collectionId: collection._id,
+        data: nr.data,
+        createdAt: new Date().toISOString(),
+      })),
+    ];
+  }, [records, newRows, collection._id]);
 
   // SMS States & Handlers
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
@@ -163,7 +177,11 @@ export function CollectionViewClient({
     try {
       const res = await sendRecordsSmsBulkAction(selectedRecordIds, collection._id);
       if (res.success) {
-        toast.success(`SMS send complete: ${res.successCount} sent, ${res.failCount} failed.`);
+        if (res.failCount > 0) {
+          toast.error(`SMS bulk complete with errors: ${res.successCount} sent, ${res.failCount} failed. Sample Errors: ${res.errors?.slice(0, 3).join('; ')}`);
+        } else {
+          toast.success(`SMS sent successfully to all ${res.successCount} recipients.`);
+        }
         setSelectedRecordIds([]);
         router.refresh();
       } else {
@@ -221,16 +239,16 @@ export function CollectionViewClient({
       if (e.key === 'Enter') {
         e.preventDefault();
         setEditingCell(null);
-        if (rowIndex < records.length - 1) {
-          setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: field._id });
+        if (rowIndex < combinedRows.length - 1) {
+          setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: field._id });
         }
       } else if (e.key === 'Tab') {
         e.preventDefault();
         setEditingCell(null);
         if (colIndex < fields.length - 1) {
           setFocusedCell({ recordId, fieldId: fields[colIndex + 1]._id });
-        } else if (rowIndex < records.length - 1) {
-          setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: fields[0]._id });
+        } else if (rowIndex < combinedRows.length - 1) {
+          setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: fields[0]._id });
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();
@@ -242,12 +260,12 @@ export function CollectionViewClient({
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (rowIndex > 0) {
-        setFocusedCell({ recordId: records[rowIndex - 1]._id, fieldId: field._id });
+        setFocusedCell({ recordId: combinedRows[rowIndex - 1]._id, fieldId: field._id });
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (rowIndex < records.length - 1) {
-        setFocusedCell({ recordId: records[rowIndex + 1]._id, fieldId: field._id });
+      if (rowIndex < combinedRows.length - 1) {
+        setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: field._id });
       }
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
@@ -280,11 +298,18 @@ export function CollectionViewClient({
   const handleSaveBulk = async () => {
     setSavingBulk(true);
     try {
-      const updates = Object.entries(draftRecords).map(([recordId, data]) => {
-        const originalRecord = records.find((r) => r._id === recordId);
-        const originalData = originalRecord ? originalRecord.data : {};
-        const merged = { ...originalData, ...data };
-        
+      const updates: { id: string; data: Record<string, unknown> }[] = [];
+      const creations: Record<string, unknown>[] = [];
+
+      for (const [recordId, data] of Object.entries(draftRecords)) {
+        let merged: Record<string, unknown> = {};
+        if (!recordId.startsWith('temp_')) {
+          const originalRecord = records.find((r) => r._id === recordId);
+          merged = { ...(originalRecord ? originalRecord.data : {}), ...data };
+        } else {
+          merged = { ...data };
+        }
+
         const hasDeposit = fields.some(f => f.name.toUpperCase() === 'DEPOSIT PAID');
         const hasRent = fields.some(f => f.name.toUpperCase() === 'MONTHLY RENT');
         const hasBalBD = fields.some(f => f.name.toUpperCase() === 'BAL B/D');
@@ -305,27 +330,59 @@ export function CollectionViewClient({
           merged['BALANCE'] = due - paid;
         }
 
-        return {
-          id: recordId,
-          data: merged,
-        };
-      });
-
-      const res = await updateRecordsBulk(collection._id, updates);
-      if (res.success) {
-        toast.success('All changes saved successfully');
-        setDraftRecords({});
-        setIsEditMode(false);
-        router.refresh();
-      } else {
-        toast.error(res.error || 'Failed to save changes');
+        if (recordId.startsWith('temp_')) {
+          creations.push(merged);
+        } else {
+          updates.push({
+            id: recordId,
+            data: merged,
+          });
+        }
       }
+
+      if (updates.length > 0) {
+        const updateRes = await updateRecordsBulk(collection._id, updates);
+        if (!updateRes.success) {
+          toast.error(updateRes.error || 'Failed to update existing records');
+          setSavingBulk(false);
+          return;
+        }
+      }
+
+      if (creations.length > 0) {
+        const createRes = await createRecordsBulk(collection._id, creations);
+        if (!createRes.success) {
+          toast.error(createRes.error || 'Failed to create new records');
+          setSavingBulk(false);
+          return;
+        }
+      }
+
+      toast.success('All changes saved successfully');
+      setDraftRecords({});
+      setNewRows([]);
+      setIsEditMode(false);
+      router.refresh();
     } catch (err) {
       console.error(err);
       toast.error('An error occurred while saving');
     } finally {
       setSavingBulk(false);
     }
+  };
+
+  const handleAddRow = () => {
+    setIsEditMode(true);
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const newRow = { _id: tempId, data: {} };
+    setNewRows((prev) => [...prev, newRow]);
+    
+    setTimeout(() => {
+      if (fields.length > 0) {
+        setFocusedCell({ recordId: tempId, fieldId: fields[0]._id });
+        setEditingCell({ recordId: tempId, fieldId: fields[0]._id });
+      }
+    }, 50);
   };
 
   const renderEditableCell = (
@@ -697,6 +754,16 @@ export function CollectionViewClient({
               <div className="flex items-center gap-2">
                 {isEditMode ? (
                   <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleAddRow}
+                      className="border-sky-600 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/20"
+                      disabled={savingBulk}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Row
+                    </Button>
                     <Button 
                       size="sm" 
                       variant="default" 
@@ -711,6 +778,7 @@ export function CollectionViewClient({
                       variant="outline" 
                       onClick={() => {
                         setDraftRecords({});
+                        setNewRows([]);
                         setIsEditMode(false);
                       }}
                       disabled={savingBulk}
@@ -720,6 +788,15 @@ export function CollectionViewClient({
                   </>
                 ) : (
                   <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleAddRow}
+                      className="border-sky-600 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/20"
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Row (Excel Mode)
+                    </Button>
                     {selectedRecordIds.length > 0 && (
                       <Button
                         size="sm"
@@ -736,7 +813,6 @@ export function CollectionViewClient({
                       size="sm"
                       variant="outline"
                       onClick={() => setIsEditMode(true)}
-                      disabled={records.length === 0}
                     >
                       Grid Edit Mode
                     </Button>
@@ -784,7 +860,7 @@ export function CollectionViewClient({
               <p className="text-sm text-muted-foreground text-center py-4">
                 Define fields first before adding records.
               </p>
-            ) : records.length === 0 ? (
+            ) : (records.length === 0 && newRows.length === 0) ? (
               <p className="text-sm text-muted-foreground text-center py-4">
                 No records yet. Add your first record.
               </p>
@@ -813,7 +889,7 @@ export function CollectionViewClient({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {records.map((record, rowIndex) => (
+                    {combinedRows.map((record, rowIndex) => (
                       <TableRow key={record._id} className={isEditMode ? 'hover:bg-transparent' : ''}>
                         <TableCell className="w-12">
                           <Checkbox
@@ -839,21 +915,40 @@ export function CollectionViewClient({
                         ))}
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              title="Send Receipt SMS"
-                              onClick={() => handleSendRowSms(record._id)}
-                              disabled={isEditMode}
-                            >
-                              <MessageSquare className="h-3.5 w-3.5 text-primary" />
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)} disabled={isEditMode}>
-                              <Pencil className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setDeleteRecordTarget(record)} disabled={isEditMode}>
-                              <Trash2 className="h-3 w-3 text-destructive" />
-                            </Button>
+                            {isEditMode ? (
+                              record._id.startsWith('temp_') && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    const nextDrafts = { ...draftRecords };
+                                    delete nextDrafts[record._id];
+                                    setDraftRecords(nextDrafts);
+                                    setNewRows(newRows.filter((nr) => nr._id !== record._id));
+                                  }}
+                                  title="Remove row"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                                </Button>
+                              )
+                            ) : (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Send Receipt SMS"
+                                  onClick={() => handleSendRowSms(record._id)}
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)}>
+                                  <Pencil className="h-3 w-3" />
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => setDeleteRecordTarget(record)}>
+                                  <Trash2 className="h-3 w-3 text-destructive" />
+                                </Button>
+                              </>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
