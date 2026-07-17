@@ -8,12 +8,12 @@ export async function GET() {
   try {
     await dbConnect();
 
-    const existingAdmin = await User.findOne({ email: 'admin@example.com' });
+    const existingAdmin = await User.findOne({ email: 'lobbyenterprices@gmail.com' });
     if (!existingAdmin) {
       await User.create({
         name: 'Admin',
-        email: 'admin@example.com',
-        password: await hashPassword('admin123'),
+        email: 'lobbyenterprices@gmail.com',
+        password: await hashPassword('LOBBY-ENT'),
         role: 'admin',
       });
     }
