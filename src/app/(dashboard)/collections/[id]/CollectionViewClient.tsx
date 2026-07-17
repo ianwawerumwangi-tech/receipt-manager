@@ -260,6 +260,15 @@ export function CollectionViewClient({
 
   const handleBulkSendSms = async () => {
     if (selectedRecordIds.length === 0) return;
+    
+    if (selectedRecordIds.length === 1) {
+      const record = combinedRows.find(r => r._id === selectedRecordIds[0]);
+      if (record) {
+        handleSmsButtonClick(record);
+        return;
+      }
+    }
+
     setSendingSmsBulk(true);
     try {
       const res = await sendRecordsSmsBulkAction(selectedRecordIds, collection._id);
@@ -896,7 +905,7 @@ export function CollectionViewClient({
 
         {/* Records Section */}
         <Card>
-          <CardHeader className="pb-3">
+          <CardHeader className="pb-3 sticky top-0 bg-card z-20 border-b shadow-sm">
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg">Records</CardTitle>
               <div className="flex items-center gap-2">
