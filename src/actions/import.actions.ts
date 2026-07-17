@@ -400,45 +400,69 @@ export async function importNewCollection(data: {
   try {
     await dbConnect();
 
-    // 1. Create the Collection
-    const collection = await Collection.create({
-      name: data.name,
-      description: data.description || 'Imported from spreadsheet',
-      createdBy: session.userId,
-    });
+    // Load workbook
+    const buffer = Buffer.from(data.base64Data, 'base64');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as any);
 
-    // 2. Create the Fields
-    const fieldsToCreate = data.fields.map((f, idx) => ({
-      collectionId: collection._id,
-      name: f.name,
-      type: f.type,
-      required: false,
-      order: idx,
-    }));
-    await Field.create(fieldsToCreate);
+    const sheetNames = data.sheetName === '__all__'
+      ? workbook.worksheets
+          .map(s => s.name)
+          .filter(name => !name.toLowerCase().includes('summary') && !name.toLowerCase().includes('total'))
+      : [data.sheetName];
 
-    // 3. Setup mappings for all created fields
-    const mappings: Record<string, string> = {};
-    data.fields.forEach((f) => {
-      mappings[f.name] = f.name;
-    });
+    let totalImported = 0;
+    let lastCollectionId = '';
 
-    // 4. Import the spreadsheet records
-    const res = await importSpreadsheet({
-      collectionId: collection._id.toString(),
-      base64Data: data.base64Data,
-      sheetName: data.sheetName,
-      headerRowNumber: data.headerRowNumber,
-      mappings,
-      createNewFields: [], // already created
-    });
+    for (const currentSheetName of sheetNames) {
+      const baseName = data.name.replace(/\s+Receipts$/i, '').trim();
+      const collectionName = data.sheetName === '__all__'
+        ? `${baseName} - ${currentSheetName}`
+        : data.name;
 
-    if ('error' in res) {
-      return res;
+      // 1. Create the Collection
+      const collection = await Collection.create({
+        name: collectionName,
+        description: data.description || `Imported from sheet ${currentSheetName}`,
+        createdBy: session.userId,
+      });
+
+      lastCollectionId = collection._id.toString();
+
+      // 2. Create the Fields
+      const fieldsToCreate = data.fields.map((f, idx) => ({
+        collectionId: collection._id,
+        name: f.name,
+        type: f.type,
+        required: false,
+        order: idx,
+      }));
+      await Field.create(fieldsToCreate);
+
+      // 3. Setup mappings for all created fields
+      const mappings: Record<string, string> = {};
+      data.fields.forEach((f) => {
+        mappings[f.name] = f.name;
+      });
+
+      // 4. Import the spreadsheet records for this sheet
+      const res = await importSpreadsheet({
+        collectionId: collection._id.toString(),
+        base64Data: data.base64Data,
+        sheetName: currentSheetName,
+        headerRowNumber: data.headerRowNumber,
+        mappings,
+        createNewFields: [], // already created
+      });
+
+      if ('error' in res) {
+        return res;
+      }
+      totalImported += res.count;
     }
 
     revalidatePath('/collections');
-    return { success: true, collectionId: collection._id.toString(), count: res.count };
+    return { success: true, collectionId: lastCollectionId, count: totalImported };
   } catch (error: any) {
     return { error: error.message || 'Failed to create and import collection' };
   }
