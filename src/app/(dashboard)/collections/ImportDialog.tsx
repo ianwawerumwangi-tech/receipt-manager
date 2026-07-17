@@ -147,6 +147,9 @@ export function ImportDialog({
         }
 
         setSheets(res.sheets || []);
+        if (res.detectedHeaderRow !== undefined) {
+          setHeaderRow(res.detectedHeaderRow);
+        }
         if (res.sheets && res.sheets.length > 0) {
           const defaultSheet = res.sheets.length > 1 ? '__all__' : res.sheets[0];
           setSelectedSheet(defaultSheet);

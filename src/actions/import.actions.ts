@@ -51,6 +51,25 @@ function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell): any {
   return null;
 }
 
+function findHeaderRow(sheet: ExcelJS.Worksheet): number {
+  const headerIndicators = ['HSE NO', 'HOUSE NO', 'NAME', 'TENANT', 'CUSTOMER', 'RCT NO', 'RECEIPT NUMBER', 'PHONE NO', 'RENT PAID'];
+  
+  for (let r = 1; r <= Math.min(sheet.rowCount, 20); r++) {
+    const row = sheet.getRow(r);
+    let matchCount = 0;
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      const val = String(cell.value || '').trim().toUpperCase();
+      if (headerIndicators.includes(val)) {
+        matchCount++;
+      }
+    });
+    if (matchCount >= 2) {
+      return r;
+    }
+  }
+  return 8; // fallback
+}
+
 export async function analyzeSpreadsheet(base64Data: string) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };
@@ -61,7 +80,14 @@ export async function analyzeSpreadsheet(base64Data: string) {
     await workbook.xlsx.load(buffer as any);
 
     const sheets = workbook.worksheets.map(s => s.name);
-    return { sheets };
+    
+    let detectedHeaderRow = 8;
+    if (workbook.worksheets.length > 0) {
+      const targetSheet = workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
+      detectedHeaderRow = findHeaderRow(targetSheet);
+    }
+
+    return { sheets, detectedHeaderRow };
   } catch (error: any) {
     return { error: error.message || 'Failed to read spreadsheet' };
   }
