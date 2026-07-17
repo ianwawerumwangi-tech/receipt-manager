@@ -107,6 +107,28 @@ const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: 'relation', label: 'Relation' },
 ];
 
+function parseMathExpression(val: any): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  const str = String(val).trim();
+  if (!str) return 0;
+  if (/^\d+(\s*\+\s*\d+)*$/.test(str)) {
+    try {
+      return str.split('+').reduce((sum, part) => sum + Number(part.trim()), 0);
+    } catch {
+      return 0;
+    }
+  }
+  const parsed = Number(str);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function getFieldValueByCandidates(data: Record<string, any>, fields: FieldItem[], candidates: string[]): any {
+  if (!data) return undefined;
+  const field = fields.find(f => candidates.includes(f.name.toUpperCase()));
+  return field ? data[field.name] : undefined;
+}
+
 export function CollectionViewClient({
   collection,
   fields,
@@ -156,10 +178,51 @@ export function CollectionViewClient({
   // SMS States & Handlers
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [sendingSmsBulk, setSendingSmsBulk] = useState(false);
+  const [smsDialogOpen, setSmsDialogOpen] = useState(false);
+  const [smsRecord, setSmsRecord] = useState<RecordItem | null>(null);
+  const [smsInstallments, setSmsInstallments] = useState<{ amount: number; rct: string }[]>([]);
+  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number | 'all'>(0);
 
-  const handleSendRowSms = async (recordId: string) => {
+  const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
+    if (record.data && Array.isArray(record.data._installments)) {
+      return record.data._installments as { amount: number; rct: string }[];
+    }
+    
+    const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'].includes(f.name.toUpperCase()));
+    const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+    
+    if (!amountField || !rctField) return [];
+    
+    const rctVal = String(record.data[rctField.name] || '').trim();
+    const amountVal = record.data[amountField.name];
+    
+    if (!rctVal) return [];
+    
+    const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
+    let amounts: number[] = [];
+    if (typeof amountVal === 'string' && amountVal.includes('+')) {
+      amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
+    } else if (typeof amountVal === 'number') {
+      amounts = [amountVal];
+    } else if (typeof amountVal === 'string') {
+      const parsed = Number(amountVal);
+      if (!isNaN(parsed)) amounts = [parsed];
+    }
+    
+    const count = Math.max(amounts.length, rcts.length);
+    const installments = [];
+    for (let i = 0; i < count; i++) {
+      installments.push({
+        amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
+        rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
+      });
+    }
+    return installments;
+  }, [fields]);
+
+  const handleSendRowSms = async (recordId: string, installment?: { amount: number; rct: string }) => {
     toast.promise(
-      sendRecordSmsAction(recordId, collection._id).then((res) => {
+      sendRecordSmsAction(recordId, collection._id, installment).then((res) => {
         if (res.error) throw new Error(res.error);
         return res;
       }),
@@ -169,6 +232,30 @@ export function CollectionViewClient({
         error: (err: any) => err.message || 'Failed to send SMS',
       }
     );
+  };
+
+  const handleSmsButtonClick = (record: RecordItem) => {
+    const insts = getRecordInstallments(record);
+    if (insts.length > 1) {
+      setSmsRecord(record);
+      setSmsInstallments(insts);
+      setSelectedInstallmentIndex(0);
+      setSmsDialogOpen(true);
+    } else {
+      handleSendRowSms(record._id, insts[0]);
+    }
+  };
+
+  const handleConfirmSendSms = async () => {
+    if (!smsRecord) return;
+    
+    let installment: { amount: number; rct: string } | undefined = undefined;
+    if (selectedInstallmentIndex !== 'all') {
+      installment = smsInstallments[selectedInstallmentIndex as number];
+    }
+    
+    setSmsDialogOpen(false);
+    await handleSendRowSms(smsRecord._id, installment);
   };
 
   const handleBulkSendSms = async () => {
@@ -199,11 +286,7 @@ export function CollectionViewClient({
   const getCalculatedValue = useCallback((recordId: string, recordData: Record<string, any>, fieldName: string): any => {
     const draft = draftRecords[recordId] || {};
     
-    const hasDeposit = fields.some(f => f.name.toUpperCase() === 'DEPOSIT PAID');
-    const hasRent = fields.some(f => f.name.toUpperCase() === 'MONTHLY RENT');
-    const hasBalBD = fields.some(f => f.name.toUpperCase() === 'BAL B/D');
     const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
-    const hasPaid = fields.some(f => f.name.toUpperCase() === 'RENT PAID');
     const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
 
     const getValue = (name: string) => {
@@ -211,16 +294,22 @@ export function CollectionViewClient({
       return recordData[name];
     };
 
-    if (fieldName.toUpperCase() === 'RENT DUE' && hasDue && (hasDeposit || hasRent || hasBalBD)) {
-      const dep = Number(getValue('DEPOSIT PAID') ?? 0);
-      const rent = Number(getValue('MONTHLY RENT') ?? 0);
-      const balBD = Number(getValue('BAL B/D') ?? 0);
-      return dep + rent + balBD;
+    const getValueByCandidates = (candidates: string[]) => {
+      const field = fields.find(f => candidates.includes(f.name.toUpperCase()));
+      return field ? getValue(field.name) : undefined;
+    };
+
+    if (fieldName.toUpperCase() === 'RENT DUE' && hasDue) {
+      const dep = parseMathExpression(getValueByCandidates(['DEPOSIT PAID', 'DEPOSIT']));
+      const rent = parseMathExpression(getValueByCandidates(['MONTHLY RENT', 'RENT']));
+      const balBD = parseMathExpression(getValueByCandidates(['BAL B/D', 'BAL B/F', 'BALANCE B/F']));
+      const water = parseMathExpression(getValueByCandidates(['WATERBILL', 'WATER BILL', 'WATER']));
+      return dep + rent + balBD + water;
     }
 
     if (fieldName.toUpperCase() === 'BALANCE' && hasBal && hasDue) {
       const due = Number(getCalculatedValue(recordId, recordData, 'RENT DUE') ?? 0);
-      const paid = Number(getValue('RENT PAID') ?? 0);
+      const paid = parseMathExpression(getValueByCandidates(['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']));
       return due - paid;
     }
 
@@ -547,8 +636,62 @@ export function CollectionViewClient({
   const handleRecordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const updatedForm = { ...recordForm };
+
+    const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
+    const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
+
+    if (hasDue) {
+      const dep = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['DEPOSIT PAID', 'DEPOSIT']));
+      const rent = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['MONTHLY RENT', 'RENT']));
+      const balBD = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['BAL B/D', 'BAL B/F', 'BALANCE B/F']));
+      const water = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['WATERBILL', 'WATER BILL', 'WATER']));
+      const dueField = fields.find(f => f.name.toUpperCase() === 'RENT DUE');
+      if (dueField) {
+        updatedForm[dueField.name] = dep + rent + balBD + water;
+      }
+    }
+
+    if (hasBal && hasDue) {
+      const dueField = fields.find(f => f.name.toUpperCase() === 'RENT DUE');
+      const due = Number(dueField ? updatedForm[dueField.name] ?? 0 : 0);
+      const paid = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']));
+      const balField = fields.find(f => f.name.toUpperCase() === 'BALANCE');
+      if (balField) {
+        updatedForm[balField.name] = due - paid;
+      }
+    }
+
+    // Compute installments
+    const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'].includes(f.name.toUpperCase()));
+    const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+    if (amountField && rctField) {
+      const rctVal = String(updatedForm[rctField.name] || '').trim();
+      const amountVal = updatedForm[amountField.name];
+      const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
+      let amounts: number[] = [];
+      if (typeof amountVal === 'string' && amountVal.includes('+')) {
+        amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
+      } else if (typeof amountVal === 'number') {
+        amounts = [amountVal];
+      }
+      if (amounts.length > 0 || rcts.length > 1) {
+        const installmentsList = [];
+        const count = Math.max(amounts.length, rcts.length);
+        for (let i = 0; i < count; i++) {
+          installmentsList.push({
+            amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
+            rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
+          });
+        }
+        updatedForm['_installments'] = installmentsList;
+      } else {
+        delete updatedForm['_installments'];
+      }
+    }
+
     if (editingRecord) {
-      const res = await updateRecord(editingRecord._id, collection._id, recordForm);
+      const res = await updateRecord(editingRecord._id, collection._id, updatedForm);
       if (res.success) {
         toast.success('Record updated');
         setRecordDialogOpen(false);
@@ -560,7 +703,7 @@ export function CollectionViewClient({
     } else {
       const res = await createRecord({
         collectionId: collection._id,
-        fieldData: recordForm,
+        fieldData: updatedForm,
       });
       if (res.success) {
         toast.success('Record created');
@@ -628,9 +771,10 @@ export function CollectionViewClient({
       case 'number':
         return (
           <Input
-            type="number"
+            type="text"
+            placeholder="e.g. 6000+7000"
             value={String(value ?? '')}
-            onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
+            onChange={(e) => onChange(e.target.value)}
             required={field.required}
           />
         );
@@ -702,6 +846,10 @@ export function CollectionViewClient({
     }
     if (field.type === 'boolean') {
       return value === true ? <Badge variant="default">Yes</Badge> : <Badge variant="secondary">No</Badge>;
+    }
+    if (field.type === 'number') {
+      const parsed = parseMathExpression(value);
+      return <span>{parsed.toLocaleString()}</span>;
     }
     if (field.type === 'relation') {
       const records = relationRecords[field._id] || [];
@@ -937,7 +1085,7 @@ export function CollectionViewClient({
                                   variant="ghost"
                                   size="sm"
                                   title="Send Receipt SMS"
-                                  onClick={() => handleSendRowSms(record._id)}
+                                  onClick={() => handleSmsButtonClick(record)}
                                 >
                                   <MessageSquare className="h-3.5 w-3.5 text-primary" />
                                 </Button>
@@ -1009,6 +1157,80 @@ export function CollectionViewClient({
         message="Delete this record? This cannot be undone."
         confirmLabel="Delete"
       />
+
+      {/* SMS Installment Dialog */}
+      <Dialog open={smsDialogOpen} onOpenChange={setSmsDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5 text-primary" />
+              Select Installment to Receipt
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              This payment has multiple installments or transaction IDs. Please select which installment to reference in the SMS:
+            </p>
+            <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
+              {smsInstallments.map((inst, index) => (
+                <div
+                  key={index}
+                  onClick={() => setSelectedInstallmentIndex(index)}
+                  className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
+                    selectedInstallmentIndex === index
+                      ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                      : 'hover:bg-muted/50 border-muted'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 text-left">
+                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === index ? 'border-primary' : 'border-muted'}`}>
+                      {selectedInstallmentIndex === index && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
+                    </div>
+                    <div>
+                      <span className="font-semibold text-sm">Installment {index + 1}</span>
+                      <p className="text-xs text-muted-foreground">Tx ID: {inst.rct || 'N/A'}</p>
+                    </div>
+                  </div>
+                  <span className="font-bold text-sm text-primary">
+                    KES {inst.amount.toLocaleString()}
+                  </span>
+                </div>
+              ))}
+              
+              <div
+                onClick={() => setSelectedInstallmentIndex('all')}
+                className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
+                  selectedInstallmentIndex === 'all'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'hover:bg-muted/50 border-muted'
+                }`}
+              >
+                <div className="flex items-center gap-3 text-left">
+                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === 'all' ? 'border-primary' : 'border-muted'}`}>
+                    {selectedInstallmentIndex === 'all' && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
+                  </div>
+                  <div>
+                    <span className="font-semibold text-sm">Overall Total</span>
+                    <p className="text-xs text-muted-foreground">All Tx IDs</p>
+                  </div>
+                </div>
+                <span className="font-bold text-sm text-primary">
+                  KES {(smsRecord ? parseMathExpression(getFieldValueByCandidates(smsRecord.data, fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'])) : 0).toLocaleString()}
+                </span>
+              </div>
+            </div>
+            
+            <div className="flex gap-2 justify-end pt-2">
+              <Button variant="outline" onClick={() => setSmsDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleConfirmSendSms}>
+                Send Receipt SMS
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

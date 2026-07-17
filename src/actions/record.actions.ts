@@ -8,6 +8,22 @@ import { getSession } from '@/lib/auth';
 import { serialize } from '@/lib/utils';
 import { sendSms } from '@/lib/sms';
 
+function parseMathExpression(val: any): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  const str = String(val).trim();
+  if (!str) return 0;
+  if (/^\d+(\s*\+\s*\d+)*$/.test(str)) {
+    try {
+      return str.split('+').reduce((sum, part) => sum + Number(part.trim()), 0);
+    } catch {
+      return 0;
+    }
+  }
+  const parsed = Number(str);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
 async function validateAndFormatReceiptNumber(
   collectionId: string,
   recordId: string | null,
@@ -35,7 +51,7 @@ async function validateAndFormatReceiptNumber(
       }
       const existing = await Record.findOne({
         collectionId,
-        [`data.${fieldName}`]: generated,
+        [`data.${fieldName}`]: { $regex: new RegExp(`(^|/)${generated}($|/)`) },
       });
       if (!existing) {
         isUnique = true;
@@ -45,27 +61,36 @@ async function validateAndFormatReceiptNumber(
     return {};
   }
 
-  // Validate length (must be 10 characters)
-  if (val.length !== 10 || !/^[A-Z0-9]+$/.test(val)) {
+  // Validate each part of the slash-separated receipt numbers
+  const parts = val.split('/').map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) {
     return {
-      error: `Receipt number "${val}" must be exactly 10 uppercase alphanumeric characters (e.g. M-Pesa code).`,
+      error: `Receipt number cannot be empty.`,
     };
   }
 
-  // Validate uniqueness
-  const query: Record<string, any> = {
-    collectionId,
-    [`data.${fieldName}`]: val,
-  };
-  if (recordId) {
-    query._id = { $ne: recordId };
-  }
+  for (const part of parts) {
+    if (part.length !== 10 || !/^[A-Z0-9]+$/.test(part)) {
+      return {
+        error: `Each transaction ID "${part}" in the receipt must be exactly 10 uppercase alphanumeric characters.`,
+      };
+    }
 
-  const existing = await Record.findOne(query);
-  if (existing) {
-    return {
-      error: `Receipt number "${val}" is already used in another record. It must be unique.`,
+    // Validate uniqueness for each transaction ID part
+    const query: Record<string, any> = {
+      collectionId,
+      [`data.${fieldName}`]: { $regex: new RegExp(`(^|/)${part}($|/)`) },
     };
+    if (recordId) {
+      query._id = { $ne: recordId };
+    }
+
+    const existing = await Record.findOne(query);
+    if (existing) {
+      return {
+        error: `Transaction ID "${part}" is already used in another record. It must be unique.`,
+      };
+    }
   }
 
   fieldData[fieldName] = val; // save clean trimmed uppercase value
@@ -191,7 +216,11 @@ export async function updateRecordsBulk(
   return { success: true };
 }
 
-export async function sendRecordSmsAction(recordId: string, collectionId: string) {
+export async function sendRecordSmsAction(
+  recordId: string,
+  collectionId: string,
+  installment?: { amount: number; rct: string }
+) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };
 
@@ -202,11 +231,20 @@ export async function sendRecordSmsAction(recordId: string, collectionId: string
 
   const fields = await Field.find({ collectionId }).lean();
   
-  // Find name, phone, amount, and receipt number fields
+  // Find name, phone, amount, receipt, and balance fields
   const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
   const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
-  const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
+  
+  // Prefer rent paid candidates first
+  const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
+  let amountField = null;
+  for (const candidate of amountFieldCandidates) {
+    amountField = fields.find(f => f.name.toUpperCase() === candidate);
+    if (amountField) break;
+  }
+
   const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+  const balanceField = fields.find(f => ['BALANCE', 'BAL', 'OUTSTANDING'].includes(f.name.toUpperCase()));
   const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
 
   if (!phoneField) {
@@ -215,14 +253,26 @@ export async function sendRecordSmsAction(recordId: string, collectionId: string
 
   const phone = String(record.data.get(phoneField.name) || '').trim();
   const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
-  const amount = Number(record.data.get(amountField?.name || '') || 0);
-  const rct = String(record.data.get(rctField?.name || '') || '').trim();
+  
+  // Use installment values if provided, otherwise default to full record values
+  const amount = installment 
+    ? installment.amount 
+    : (amountField ? parseMathExpression(record.data.get(amountField.name)) : 0);
+    
+  const rct = installment 
+    ? installment.rct 
+    : String(rctField ? record.data.get(rctField.name) || '' : '').trim();
 
   if (!phone) {
     return { error: 'Phone number is empty for this record.' };
   }
 
-  const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}. Thank you.`;
+  const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
+  const balanceStr = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '')
+    ? ` Your current balance is KES ${parseMathExpression(balanceVal).toLocaleString()}.`
+    : '';
+
+  const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
 
   const result = await sendSms(phone, message);
 
@@ -261,8 +311,17 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   const fields = await Field.find({ collectionId }).lean();
   const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
   const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
-  const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
+  
+  // Prefer rent paid candidates first
+  const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
+  let amountField = null;
+  for (const candidate of amountFieldCandidates) {
+    amountField = fields.find(f => f.name.toUpperCase() === candidate);
+    if (amountField) break;
+  }
+
   const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
+  const balanceField = fields.find(f => ['BALANCE', 'BAL', 'OUTSTANDING'].includes(f.name.toUpperCase()));
   const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
 
   if (!phoneField) {
@@ -290,8 +349,31 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   for (const record of records) {
     const phone = String(record.data.get(phoneField.name) || '').trim();
     const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
-    const amount = Number(record.data.get(amountField?.name || '') || 0);
-    const rct = String(record.data.get(rctField?.name || '') || '').trim();
+    
+    // Resolve receipt numbers and installments
+    const rctVal = String(rctField ? record.data.get(rctField.name) || '' : '').trim();
+    const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
+    
+    let amount = amountField ? parseMathExpression(record.data.get(amountField.name)) : 0;
+    let rct = rctVal;
+    
+    const installments = record.data.get('_installments') as { amount: number; rct: string }[] | undefined;
+    if (installments && installments.length > 0) {
+      const lastInst = installments[installments.length - 1];
+      amount = lastInst.amount;
+      rct = lastInst.rct;
+    } else if (rcts.length > 1) {
+      // Fallback: parse from formula and slashes on the fly
+      const amountVal = amountField ? record.data.get(amountField.name) : '';
+      let amounts: number[] = [];
+      if (typeof amountVal === 'string' && amountVal.includes('+')) {
+        amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
+      }
+      const lastRct = rcts[rcts.length - 1];
+      const lastAmount = amounts[rcts.length - 1] ?? amounts[amounts.length - 1] ?? amount;
+      amount = lastAmount;
+      rct = lastRct;
+    }
 
     if (!phone) {
       record.data.set(statusFieldName, 'failed');
@@ -301,7 +383,12 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
       continue;
     }
 
-    const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}. Thank you.`;
+    const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
+    const balanceStr = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '')
+      ? ` Your current balance is KES ${parseMathExpression(balanceVal).toLocaleString()}.`
+      : '';
+
+    const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
     const result = await sendSms(phone, message);
 
     record.data.set(statusFieldName, result.success ? 'sent' : 'failed');

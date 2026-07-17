@@ -80,8 +80,12 @@ export async function getSpreadsheetPreview(
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as any);
 
-    const sheet = workbook.getWorksheet(sheetName);
-    if (!sheet) return { error: `Worksheet "${sheetName}" not found` };
+    const targetSheetName = sheetName === '__all__'
+      ? workbook.worksheets.map(s => s.name).find(name => !name.toLowerCase().includes('summary') && !name.toLowerCase().includes('total')) || workbook.worksheets[0].name
+      : sheetName;
+
+    const sheet = workbook.getWorksheet(targetSheetName);
+    if (!sheet) return { error: `Worksheet "${targetSheetName}" not found` };
 
     const rowNum = Number(headerRowNumber);
     const headerRow = sheet.getRow(rowNum);
@@ -185,127 +189,189 @@ export async function importSpreadsheet(data: {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as any);
 
-    const sheet = workbook.getWorksheet(data.sheetName);
-    if (!sheet) return { error: `Worksheet "${data.sheetName}" not found` };
+    const sheetNames = data.sheetName === '__all__'
+      ? workbook.worksheets
+          .map(s => s.name)
+          .filter(name => !name.toLowerCase().includes('summary') && !name.toLowerCase().includes('total'))
+      : [data.sheetName];
 
-    const rowNum = Number(data.headerRowNumber);
-    const headerRow = sheet.getRow(rowNum);
-    const headers: string[] = [];
-    headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      const val = cell.value;
-      if (val && typeof val === 'string') {
-        headers.push(val.trim());
-      } else if (val && typeof val === 'number') {
-        headers.push(String(val));
-      } else {
-        headers.push(`Column ${colNumber}`);
-      }
-    });
-
-    let currentIdx = rowNum + 1;
     let importCount = 0;
-
-    // We will collect records and insert them
     const recordsToInsert: any[] = [];
 
-    while (currentIdx <= sheet.rowCount) {
-      const row = sheet.getRow(currentIdx);
-      
-      // Stop condition
-      const firstCellVal = String(row.getCell(1).value || '').trim();
-      const lowerVal = firstCellVal.toLowerCase();
-      if (
-        !firstCellVal || 
-        lowerVal.startsWith('total') || 
-        lowerVal.startsWith('deduction') || 
-        lowerVal.startsWith('less') || 
-        lowerVal.startsWith('bal b/f') || 
-        lowerVal.startsWith('amount due') || 
-        lowerVal.startsWith('authorise')
-      ) {
-        break;
-      }
+    for (const currentSheetName of sheetNames) {
+      const sheet = workbook.getWorksheet(currentSheetName);
+      if (!sheet) continue;
 
-      const rowValues: Record<string, any> = {};
-      headers.forEach((header, index) => {
-        const colNum = index + 1;
-        const cell = row.getCell(colNum);
-        rowValues[header] = evaluateCell(sheet, cell);
+      const rowNum = Number(data.headerRowNumber);
+      if (sheet.rowCount < rowNum) continue;
+
+      const headerRow = sheet.getRow(rowNum);
+      const headers: string[] = [];
+      headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const val = cell.value;
+        if (val && typeof val === 'string') {
+          headers.push(val.trim());
+        } else if (val && typeof val === 'number') {
+          headers.push(String(val));
+        } else {
+          headers.push(`Column ${colNumber}`);
+        }
       });
 
-      // Map dynamic record data
-      const recordData: Record<string, any> = {};
-      let hasMappedData = false;
+      let currentIdx = rowNum + 1;
 
-      for (const [fieldName, excelHeader] of Object.entries(data.mappings)) {
-        if (excelHeader === '__skip__') {
-          continue;
+      while (currentIdx <= sheet.rowCount) {
+        const row = sheet.getRow(currentIdx);
+        
+        // Stop condition
+        const firstCellVal = String(row.getCell(1).value || '').trim();
+        const lowerVal = firstCellVal.toLowerCase();
+        if (
+          !firstCellVal || 
+          lowerVal.startsWith('total') || 
+          lowerVal.startsWith('deduction') || 
+          lowerVal.startsWith('less') || 
+          lowerVal.startsWith('bal b/f') || 
+          lowerVal.startsWith('amount due') || 
+          lowerVal.startsWith('authorise')
+        ) {
+          break;
         }
-        if (excelHeader === '__sheet_name__') {
-          recordData[fieldName] = data.sheetName;
-          hasMappedData = true;
-          continue;
-        }
 
-        const excelValue = rowValues[excelHeader];
-        if (excelValue !== null && excelValue !== undefined) {
-          recordData[fieldName] = excelValue;
-          hasMappedData = true;
-        }
-      }
+        const rowValues: Record<string, any> = {};
+        headers.forEach((header, index) => {
+          const colNum = index + 1;
+          const cell = row.getCell(colNum);
+          rowValues[header] = evaluateCell(sheet, cell);
+        });
 
-      if (hasMappedData) {
-        // Auto-validate/correct receipt numbers mapped to RCT NO / RECEIPT NUMBER
-        const rctFieldNames = Object.keys(data.mappings).filter(
-          (name) => name.toUpperCase() === 'RCT NO' || name.toUpperCase() === 'RECEIPT NUMBER'
-        );
+        // Map dynamic record data
+        const recordData: Record<string, any> = {};
+        let hasMappedData = false;
 
-        for (const rctFieldName of rctFieldNames) {
-          let val = String(recordData[rctFieldName] || '').trim().toUpperCase();
-          const isValidFormat = val.length === 10 && /^[A-Z0-9]+$/.test(val);
-          
-          let isDuplicate = false;
-          if (isValidFormat) {
-            const dbDup = await RecordModel.findOne({
-              collectionId: data.collectionId,
-              [`data.${rctFieldName}`]: val,
-            });
-            const batchDup = recordsToInsert.some((r) => r.data[rctFieldName] === val);
-            isDuplicate = !!dbDup || batchDup;
+        for (const [fieldName, excelHeader] of Object.entries(data.mappings)) {
+          if (excelHeader === '__skip__') {
+            continue;
+          }
+          if (excelHeader === '__sheet_name__') {
+            recordData[fieldName] = currentSheetName;
+            hasMappedData = true;
+            continue;
           }
 
-          if (!val || !isValidFormat || isDuplicate) {
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            let isUnique = false;
-            let generated = '';
-            while (!isUnique) {
-              generated = '';
-              for (let i = 0; i < 10; i++) {
-                generated += chars.charAt(Math.floor(Math.random() * chars.length));
+          const excelValue = rowValues[excelHeader];
+          if (excelValue !== null && excelValue !== undefined) {
+            recordData[fieldName] = excelValue;
+            hasMappedData = true;
+          }
+        }
+
+        if (hasMappedData) {
+          // Parse installments from formulas and slash-separated receipt numbers
+          const amountFieldKey = Object.keys(data.mappings).find(
+            (name) => name.toUpperCase() === 'RENT PAID' || name.toUpperCase() === 'AMOUNT PAID' || name.toUpperCase() === 'AMOUNT'
+          );
+          const rctFieldKey = Object.keys(data.mappings).find(
+            (name) => name.toUpperCase() === 'RCT NO' || name.toUpperCase() === 'RECEIPT NUMBER' || name.toUpperCase() === 'RECEIPT NO'
+          );
+
+          if (amountFieldKey && rctFieldKey) {
+            const amountExcelHeader = data.mappings[amountFieldKey];
+            const rctExcelHeader = data.mappings[rctFieldKey];
+            
+            if (amountExcelHeader && rctExcelHeader) {
+              const amountColIndex = headers.indexOf(amountExcelHeader);
+              const amountCell = amountColIndex !== -1 ? row.getCell(amountColIndex + 1) : null;
+              const rctVal = String(recordData[rctFieldKey] || '').trim();
+              
+              let amounts: number[] = [];
+              if (amountCell && amountCell.value && typeof amountCell.value === 'object' && 'formula' in amountCell.value) {
+                const formula = (amountCell.value.formula || '').replace(/^=/, '').trim();
+                const parts = formula.split('+').map(p => Number(p.trim()));
+                if (parts.every(p => !isNaN(p))) {
+                  amounts = parts;
+                }
               }
-              const dbDup = await RecordModel.findOne({
-                collectionId: data.collectionId,
-                [`data.${rctFieldName}`]: generated,
-              });
-              const batchDup = recordsToInsert.some((r) => r.data[rctFieldName] === generated);
-              if (!dbDup && !batchDup) {
-                isUnique = true;
+              
+              const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
+              if (amounts.length > 0 || rcts.length > 1) {
+                const installments = [];
+                const count = Math.max(amounts.length, rcts.length);
+                for (let i = 0; i < count; i++) {
+                  installments.push({
+                    amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
+                    rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
+                  });
+                }
+                recordData['_installments'] = installments;
               }
             }
-            recordData[rctFieldName] = generated;
-          } else {
-            recordData[rctFieldName] = val;
           }
+
+          // Auto-validate/correct receipt numbers mapped to RCT NO / RECEIPT NUMBER
+          const rctFieldNames = Object.keys(data.mappings).filter(
+            (name) => name.toUpperCase() === 'RCT NO' || name.toUpperCase() === 'RECEIPT NUMBER'
+          );
+
+          for (const rctFieldName of rctFieldNames) {
+            let val = String(recordData[rctFieldName] || '').trim().toUpperCase();
+            const rcts = val.split('/').map(r => r.trim()).filter(Boolean);
+            const isValidFormat = rcts.length > 0 && rcts.every(r => r.length === 10 && /^[A-Z0-9]+$/.test(r));
+            
+            let isDuplicate = false;
+            if (isValidFormat) {
+              for (const rct of rcts) {
+                const dbDup = await RecordModel.findOne({
+                  collectionId: data.collectionId,
+                  [`data.${rctFieldName}`]: { $regex: new RegExp(`(^|/)${rct}($|/)`) },
+                });
+                const batchDup = recordsToInsert.some((r) => {
+                  const rVal = String(r.data[rctFieldName] || '');
+                  return rVal.split('/').map(x => x.trim()).includes(rct);
+                });
+                if (dbDup || batchDup) {
+                  isDuplicate = true;
+                  break;
+                }
+              }
+            }
+
+            if (!val || !isValidFormat || isDuplicate) {
+              const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+              let isUnique = false;
+              let generated = '';
+              while (!isUnique) {
+                generated = '';
+                for (let i = 0; i < 10; i++) {
+                  generated += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                const dbDup = await RecordModel.findOne({
+                  collectionId: data.collectionId,
+                  [`data.${rctFieldName}`]: { $regex: new RegExp(`(^|/)${generated}($|/)`) },
+                });
+                const batchDup = recordsToInsert.some((r) => {
+                  const rVal = String(r.data[rctFieldName] || '');
+                  return rVal.split('/').map(x => x.trim()).includes(generated);
+                });
+                if (!dbDup && !batchDup) {
+                  isUnique = true;
+                }
+              }
+              recordData[rctFieldName] = generated;
+            } else {
+              recordData[rctFieldName] = val;
+            }
+          }
+
+          recordsToInsert.push({
+            collectionId: data.collectionId,
+            data: recordData,
+            createdBy: session.userId,
+          });
         }
 
-        recordsToInsert.push({
-          collectionId: data.collectionId,
-          data: recordData,
-          createdBy: session.userId,
-        });
+        currentIdx++;
       }
-
-      currentIdx++;
     }
 
     if (recordsToInsert.length > 0) {
