@@ -9,45 +9,62 @@ import { Record as RecordModel } from '@/models/Record';
 import { getSession } from '@/lib/auth';
 
 // Evaluates formulas dynamically
-function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell): any {
+function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: ExcelJS.Workbook): any {
   if (!cell) return null;
   const val = cell.value;
   if (val === null || val === undefined) return null;
   if (typeof val !== 'object') return val;
-  
-  // If it's a formula object
-  if ('formula' in val) {
-    const fVal = val as any;
-    if (fVal.result !== undefined && fVal.result !== null) {
-      return fVal.result;
+  if (val instanceof Date) return val.toISOString().split('T')[0];
+
+  if ('result' in val && val.result !== undefined && val.result !== null) {
+    if (typeof val.result === 'object') {
+      if ((val.result as any).error) return null;
+      if ('result' in (val.result as any)) return (val.result as any).result;
+    } else {
+      return val.result;
     }
+  }
+
+  if ('formula' in val || 'sharedFormula' in val) {
     try {
-      const formula = fVal.formula.toUpperCase();
-      const cellRegex = /[A-Z]+\d+/g;
+      const fVal = val as any;
+      const formula = String(fVal.formula || fVal.sharedFormula || '').toUpperCase();
+      const cellRegex = /([A-Z0-9_]+!)?[A-Z]+\d+/g;
       let evaluatedFormula = formula;
       const matches = Array.from(new Set(formula.match(cellRegex) || [])) as string[];
-      
+
       for (const ref of matches) {
-        const targetCell = sheet.getCell(ref);
-        const cellVal = evaluateCell(sheet, targetCell) ?? 0;
+        let targetSheet = sheet;
+        let cellRef = ref;
+        if (ref.includes('!')) {
+          const [sName, cRef] = ref.split('!');
+          if (workbook) {
+            targetSheet = workbook.getWorksheet(sName) || sheet;
+          }
+          cellRef = cRef;
+        }
+        const targetCell = targetSheet.getCell(cellRef);
+        const cellVal = evaluateCell(targetSheet, targetCell, workbook) ?? 0;
         evaluatedFormula = evaluatedFormula.split(ref).join(String(cellVal));
       }
-      
+
       const cleanExpr = evaluatedFormula.replace(/[^0-9.+\-*/()]/g, '');
       if (!cleanExpr) return null;
-      
+
       const result = new Function(`return (${cleanExpr})`)();
       return result;
     } catch (e) {
       return null;
     }
   }
-  
-  // If it's a rich text object or something else
+
   if ('text' in val) {
     return (val as any).text;
   }
-  
+  if ('richText' in val && Array.isArray((val as any).richText)) {
+    return (val as any).richText.map((t: any) => t.text).join('');
+  }
+
   return null;
 }
 
@@ -158,7 +175,7 @@ export async function getSpreadsheetPreview(
       headers.forEach((header, index) => {
         const colNum = index + 1;
         const cell = row.getCell(colNum);
-        const val = evaluateCell(sheet, cell);
+        const val = evaluateCell(sheet, cell, workbook);
         if (val !== null && val !== undefined && val !== '') {
           rowData[header] = val;
           hasData = true;
@@ -224,6 +241,12 @@ export async function importSpreadsheet(data: {
     let importCount = 0;
     const recordsToInsert: any[] = [];
 
+    const maxOrderRecord = await RecordModel.findOne({ collectionId: data.collectionId })
+      .sort({ order: -1 })
+      .select('order')
+      .lean();
+    let currentOrder = (maxOrderRecord?.order ?? -1) + 1;
+
     for (const currentSheetName of sheetNames) {
       const sheet = workbook.getWorksheet(currentSheetName);
       if (!sheet) continue;
@@ -268,7 +291,7 @@ export async function importSpreadsheet(data: {
         headers.forEach((header, index) => {
           const colNum = index + 1;
           const cell = row.getCell(colNum);
-          rowValues[header] = evaluateCell(sheet, cell);
+          rowValues[header] = evaluateCell(sheet, cell, workbook);
         });
 
         // Map dynamic record data
@@ -392,6 +415,7 @@ export async function importSpreadsheet(data: {
           recordsToInsert.push({
             collectionId: data.collectionId,
             data: recordData,
+            order: currentOrder++,
             createdBy: session.userId,
           });
         }

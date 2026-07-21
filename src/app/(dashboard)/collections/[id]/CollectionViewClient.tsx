@@ -291,39 +291,12 @@ export function CollectionViewClient({
     }
   };
 
-  // Live Auto-Calculation Engine
+  // Value Lookup Engine (Returns exact stored or draft value)
   const getCalculatedValue = useCallback((recordId: string, recordData: Record<string, any>, fieldName: string): any => {
     const draft = draftRecords[recordId] || {};
-    
-    const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
-    const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
-
-    const getValue = (name: string) => {
-      if (name in draft) return draft[name];
-      return recordData[name];
-    };
-
-    const getValueByCandidates = (candidates: string[]) => {
-      const field = fields.find(f => candidates.includes(f.name.toUpperCase()));
-      return field ? getValue(field.name) : undefined;
-    };
-
-    if (fieldName.toUpperCase() === 'RENT DUE' && hasDue) {
-      const dep = parseMathExpression(getValueByCandidates(['DEPOSIT PAID', 'DEPOSIT']));
-      const rent = parseMathExpression(getValueByCandidates(['MONTHLY RENT', 'RENT']));
-      const balBD = parseMathExpression(getValueByCandidates(['BAL B/D', 'BAL B/F', 'BALANCE B/F']));
-      const water = parseMathExpression(getValueByCandidates(['WATERBILL', 'WATER BILL', 'WATER']));
-      return dep + rent + balBD + water;
-    }
-
-    if (fieldName.toUpperCase() === 'BALANCE' && hasBal && hasDue) {
-      const due = Number(getCalculatedValue(recordId, recordData, 'RENT DUE') ?? 0);
-      const paid = parseMathExpression(getValueByCandidates(['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']));
-      return due - paid;
-    }
-
-    return getValue(fieldName);
-  }, [draftRecords, fields]);
+    if (fieldName in draft) return draft[fieldName];
+    return recordData[fieldName];
+  }, [draftRecords]);
 
   // Keyboard navigation & Editing cell commits
   const handleCellKeyDown = (
@@ -406,26 +379,6 @@ export function CollectionViewClient({
           merged = { ...(originalRecord ? originalRecord.data : {}), ...data };
         } else {
           merged = { ...data };
-        }
-
-        const hasDeposit = fields.some(f => f.name.toUpperCase() === 'DEPOSIT PAID');
-        const hasRent = fields.some(f => f.name.toUpperCase() === 'MONTHLY RENT');
-        const hasBalBD = fields.some(f => f.name.toUpperCase() === 'BAL B/D');
-        const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
-        const hasPaid = fields.some(f => f.name.toUpperCase() === 'RENT PAID');
-        const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
-
-        if (hasDue && (hasDeposit || hasRent || hasBalBD)) {
-          const dep = Number(merged['DEPOSIT PAID'] ?? 0);
-          const rent = Number(merged['MONTHLY RENT'] ?? 0);
-          const balBD = Number(merged['BAL B/D'] ?? 0);
-          merged['RENT DUE'] = dep + rent + balBD;
-        }
-
-        if (hasBal && hasDue) {
-          const due = Number(merged['RENT DUE'] ?? 0);
-          const paid = Number(merged['RENT PAID'] ?? 0);
-          merged['BALANCE'] = due - paid;
         }
 
         if (recordId.startsWith('temp_')) {
@@ -646,30 +599,6 @@ export function CollectionViewClient({
     e.preventDefault();
 
     const updatedForm = { ...recordForm };
-
-    const hasDue = fields.some(f => f.name.toUpperCase() === 'RENT DUE');
-    const hasBal = fields.some(f => f.name.toUpperCase() === 'BALANCE');
-
-    if (hasDue) {
-      const dep = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['DEPOSIT PAID', 'DEPOSIT']));
-      const rent = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['MONTHLY RENT', 'RENT']));
-      const balBD = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['BAL B/D', 'BAL B/F', 'BALANCE B/F']));
-      const water = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['WATERBILL', 'WATER BILL', 'WATER']));
-      const dueField = fields.find(f => f.name.toUpperCase() === 'RENT DUE');
-      if (dueField) {
-        updatedForm[dueField.name] = dep + rent + balBD + water;
-      }
-    }
-
-    if (hasBal && hasDue) {
-      const dueField = fields.find(f => f.name.toUpperCase() === 'RENT DUE');
-      const due = Number(dueField ? updatedForm[dueField.name] ?? 0 : 0);
-      const paid = parseMathExpression(getFieldValueByCandidates(updatedForm, fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']));
-      const balField = fields.find(f => f.name.toUpperCase() === 'BALANCE');
-      if (balField) {
-        updatedForm[balField.name] = due - paid;
-      }
-    }
 
     // Compute installments
     const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'].includes(f.name.toUpperCase()));

@@ -103,7 +103,7 @@ export async function getRecords(collectionId: string) {
 
   await dbConnect();
   const records = await Record.find({ collectionId })
-    .sort({ createdAt: -1 })
+    .sort({ order: 1, createdAt: 1 })
     .lean();
 
   return serialize(
@@ -131,9 +131,17 @@ export async function createRecord(data: {
     return { error: valRes.error };
   }
 
+  const maxOrderRecord = await Record.findOne({ collectionId: data.collectionId })
+    .sort({ order: -1 })
+    .select('order')
+    .lean();
+
+  const nextOrder = (maxOrderRecord?.order ?? -1) + 1;
+
   await Record.create({
     collectionId: data.collectionId,
     data: data.fieldData,
+    order: nextOrder,
     createdBy: session.userId,
   });
 
@@ -163,7 +171,7 @@ export async function getCollectionRecords(collectionId: string) {
 
   await dbConnect();
   const records = await Record.find({ collectionId })
-    .sort({ createdAt: -1 })
+    .sort({ order: 1, createdAt: 1 })
     .lean();
 
   return serialize(
@@ -268,8 +276,10 @@ export async function sendRecordSmsAction(
   }
 
   const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
-  const balanceStr = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '')
-    ? ` Your current balance is KES ${parseMathExpression(balanceVal).toLocaleString()}.`
+  const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
+  const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
+  const balanceStr = displayBal !== null
+    ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
     : '';
 
   const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
@@ -384,8 +394,10 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
     }
 
     const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
-    const balanceStr = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '')
-      ? ` Your current balance is KES ${parseMathExpression(balanceVal).toLocaleString()}.`
+    const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
+    const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
+    const balanceStr = displayBal !== null
+      ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
       : '';
 
     const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
@@ -423,10 +435,18 @@ export async function createRecordsBulk(
     }
   }
 
+  const maxOrderRecord = await Record.findOne({ collectionId })
+    .sort({ order: -1 })
+    .select('order')
+    .lean();
+
+  let startOrder = (maxOrderRecord?.order ?? -1) + 1;
+
   // Insert all records
-  const newRecords = recordsData.map((fieldData) => ({
+  const newRecords = recordsData.map((fieldData, index) => ({
     collectionId,
     data: fieldData,
+    order: startOrder + index,
     createdBy: session.userId,
   }));
 
