@@ -21,7 +21,7 @@ export function formatPhoneNumber(phone: string): string {
   return cleaned;
 }
 
-export async function sendSms(phone: string, message: string): Promise<SmsResult> {
+async function sendSingleSms(phone: string, message: string): Promise<SmsResult> {
   let apiUrl = process.env.BONGATECH_API_URL || 'https://bulk.bongatech.co.ke/api/v1/send-sms';
   if (apiUrl.includes('api.bongatech.co.ke/sms/v1/send') || apiUrl.includes('api.bongatech.co.ke')) {
     apiUrl = 'https://bulk.bongatech.co.ke/api/v1/send-sms';
@@ -41,7 +41,7 @@ export async function sendSms(phone: string, message: string): Promise<SmsResult
 
   const formattedPhone = formatPhoneNumber(phone);
   if (!formattedPhone) {
-    return { success: false, error: 'Invalid phone number: Number contains no digits.' };
+    return { success: false, error: `Invalid phone number "${phone}": Number contains no digits.` };
   }
 
   try {
@@ -104,6 +104,32 @@ export async function sendSms(phone: string, message: string): Promise<SmsResult
     console.error('[BongaTech SMS Error] Fetch or network exception:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error during SMS request' };
   }
+}
+
+export async function sendSms(phone: string, message: string): Promise<SmsResult> {
+  const numbers = String(phone || '').split(/[\/\,\;]/).map(p => p.trim()).filter(Boolean);
+  if (numbers.length === 0) {
+    return { success: false, error: 'Phone number is empty.' };
+  }
+
+  if (numbers.length === 1) {
+    return sendSingleSms(numbers[0], message);
+  }
+
+  const results = await Promise.all(numbers.map(n => sendSingleSms(n, message)));
+  const failed = results.filter(r => !r.success);
+  if (failed.length === 0) {
+    return { success: true, messageId: results.map(r => r.messageId).join(', ') };
+  }
+  if (failed.length === numbers.length) {
+    return { success: false, error: failed.map(r => r.error).join('; ') };
+  }
+
+  return {
+    success: true,
+    messageId: results.filter(r => r.success).map(r => r.messageId).join(', '),
+    error: `Partial failure: ${failed.map(r => r.error).join('; ')}`
+  };
 }
 
 export function buildSmsTemplate(params: {
