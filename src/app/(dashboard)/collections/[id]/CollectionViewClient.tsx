@@ -435,8 +435,6 @@ export function CollectionViewClient({
     const currentVal = getCalculatedValue(recordId, record.data, field.name);
 
     if (isEditing) {
-      if (field.type === 'boolean') {
-        return (
       const handleInputKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter') {
           e.preventDefault();
