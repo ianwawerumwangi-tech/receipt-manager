@@ -7,6 +7,7 @@ import { Collection } from '@/models/Collection';
 import { Field } from '@/models/Field';
 import { Record as RecordModel } from '@/models/Record';
 import { getSession } from '@/lib/auth';
+import { findLatestMonthSheet } from '@/lib/utils';
 
 // Evaluates formulas dynamically
 function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: ExcelJS.Workbook): any {
@@ -97,14 +98,15 @@ export async function analyzeSpreadsheet(base64Data: string) {
     await workbook.xlsx.load(buffer as any);
 
     const sheets = workbook.worksheets.map(s => s.name);
+    const latestSheet = findLatestMonthSheet(sheets);
     
     let detectedHeaderRow = 8;
     if (workbook.worksheets.length > 0) {
-      const targetSheet = workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
+      const targetSheet = workbook.getWorksheet(latestSheet) || workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
       detectedHeaderRow = findHeaderRow(targetSheet);
     }
 
-    return { sheets, detectedHeaderRow };
+    return { sheets, detectedHeaderRow, latestSheet };
   } catch (error: any) {
     return { error: error.message || 'Failed to read spreadsheet' };
   }

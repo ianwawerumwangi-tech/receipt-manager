@@ -151,10 +151,10 @@ export function ImportDialog({
           setHeaderRow(res.detectedHeaderRow);
         }
         if (res.sheets && res.sheets.length > 0) {
-          const defaultSheet = res.sheets.length > 1 ? '__all__' : res.sheets[0];
+          const defaultSheet = res.latestSheet || res.sheets[res.sheets.length - 1];
           setSelectedSheet(defaultSheet);
           const baseName = selectedFile.name.replace(/\.[^/.]+$/, "");
-          setNewCollectionName(baseName + ' Receipts');
+          setNewCollectionName(`${baseName} - ${defaultSheet}`);
         }
         setStep('mapping');
         setAnalyzing(false);
@@ -442,14 +442,6 @@ export function ImportDialog({
                     <SelectValue placeholder="Choose sheet" />
                   </SelectTrigger>
                   <SelectContent>
-                    {sheets.length > 1 && (
-                      <>
-                        <SelectItem value="__all__">
-                          <span className="font-semibold text-primary">Import All Worksheets ({sheets.length})</span>
-                        </SelectItem>
-                        <div className="h-px bg-muted my-1" />
-                      </>
-                    )}
                     {sheets.map((sheet) => (
                       <SelectItem key={sheet} value={sheet}>
                         {sheet}

@@ -181,7 +181,7 @@ export function CollectionViewClient({
   const [smsDialogOpen, setSmsDialogOpen] = useState(false);
   const [smsRecord, setSmsRecord] = useState<RecordItem | null>(null);
   const [smsInstallments, setSmsInstallments] = useState<{ amount: number; rct: string }[]>([]);
-  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number | 'all'>(0);
+  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number>(0);
 
   const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
     if (record.data && Array.isArray(record.data._installments)) {
@@ -247,27 +247,14 @@ export function CollectionViewClient({
   };
 
   const handleConfirmSendSms = async () => {
-    if (!smsRecord) return;
-    
-    let installment: { amount: number; rct: string } | undefined = undefined;
-    if (selectedInstallmentIndex !== 'all') {
-      installment = smsInstallments[selectedInstallmentIndex as number];
-    }
-    
+    if (!smsRecord || smsInstallments.length === 0) return;
+    const installment = smsInstallments[selectedInstallmentIndex];
     setSmsDialogOpen(false);
     await handleSendRowSms(smsRecord._id, installment);
   };
 
   const handleBulkSendSms = async () => {
     if (selectedRecordIds.length === 0) return;
-    
-    if (selectedRecordIds.length === 1) {
-      const record = combinedRows.find(r => r._id === selectedRecordIds[0]);
-      if (record) {
-        handleSmsButtonClick(record);
-        return;
-      }
-    }
 
     setSendingSmsBulk(true);
     try {
@@ -276,7 +263,7 @@ export function CollectionViewClient({
         if (res.failCount > 0) {
           toast.error(`SMS bulk complete with errors: ${res.successCount} sent, ${res.failCount} failed. Sample Errors: ${res.errors?.slice(0, 3).join('; ')}`);
         } else {
-          toast.success(`SMS sent successfully to all ${res.successCount} recipients.`);
+          toast.success(`SMS sent successfully (${res.successCount} messages sent).`);
         }
         setSelectedRecordIds([]);
         router.refresh();
@@ -1134,28 +1121,6 @@ export function CollectionViewClient({
                   </span>
                 </div>
               ))}
-              
-              <div
-                onClick={() => setSelectedInstallmentIndex('all')}
-                className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
-                  selectedInstallmentIndex === 'all'
-                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                    : 'hover:bg-muted/50 border-muted'
-                }`}
-              >
-                <div className="flex items-center gap-3 text-left">
-                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === 'all' ? 'border-primary' : 'border-muted'}`}>
-                    {selectedInstallmentIndex === 'all' && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
-                  </div>
-                  <div>
-                    <span className="font-semibold text-sm">Overall Total</span>
-                    <p className="text-xs text-muted-foreground">All Tx IDs</p>
-                  </div>
-                </div>
-                <span className="font-bold text-sm text-primary">
-                  KES {(smsRecord ? parseMathExpression(getFieldValueByCandidates(smsRecord.data, fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'])) : 0).toLocaleString()}
-                </span>
-              </div>
             </div>
             
             <div className="flex gap-2 justify-end pt-2">

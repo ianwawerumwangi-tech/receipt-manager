@@ -5,7 +5,7 @@ import { dbConnect } from '@/lib/mongodb';
 import { Record } from '@/models/Record';
 import { Field } from '@/models/Field';
 import { getSession } from '@/lib/auth';
-import { serialize } from '@/lib/utils';
+import { serialize, extractRecordInstallments } from '@/lib/utils';
 import { sendSms } from '@/lib/sms';
 
 function parseMathExpression(val: any): number {
@@ -322,7 +322,6 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
   const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
   
-  // Prefer rent paid candidates first
   const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
   let amountField = null;
   for (const candidate of amountFieldCandidates) {
@@ -338,7 +337,6 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
     return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
   }
 
-  // Check or create SMS Status field
   let statusFieldName = 'SMS Status';
   if (!smsStatusField) {
     await Field.create({
@@ -357,34 +355,11 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   const errors: string[] = [];
 
   for (const record of records) {
-    const phone = String(record.data.get(phoneField.name) || '').trim();
-    const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
+    const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
     
-    // Resolve receipt numbers and installments
-    const rctVal = String(rctField ? record.data.get(rctField.name) || '' : '').trim();
-    const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
+    const phone = String(recordDataObj[phoneField.name] || '').trim();
+    const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
     
-    let amount = amountField ? parseMathExpression(record.data.get(amountField.name)) : 0;
-    let rct = rctVal;
-    
-    const installments = record.data.get('_installments') as { amount: number; rct: string }[] | undefined;
-    if (installments && installments.length > 0) {
-      const lastInst = installments[installments.length - 1];
-      amount = lastInst.amount;
-      rct = lastInst.rct;
-    } else if (rcts.length > 1) {
-      // Fallback: parse from formula and slashes on the fly
-      const amountVal = amountField ? record.data.get(amountField.name) : '';
-      let amounts: number[] = [];
-      if (typeof amountVal === 'string' && amountVal.includes('+')) {
-        amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
-      }
-      const lastRct = rcts[rcts.length - 1];
-      const lastAmount = amounts[rcts.length - 1] ?? amounts[amounts.length - 1] ?? amount;
-      amount = lastAmount;
-      rct = lastRct;
-    }
-
     if (!phone) {
       record.data.set(statusFieldName, 'failed');
       await record.save();
@@ -393,25 +368,38 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
       continue;
     }
 
-    const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
+    let installments = extractRecordInstallments(recordDataObj, fields);
+    
+    if (installments.length === 0) {
+      const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+      const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
+      installments = [{ amount: defaultAmount, rct: defaultRct }];
+    }
+
+    const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
     const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
     const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
     const balanceStr = displayBal !== null
       ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
       : '';
 
-    const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
-    const result = await sendSms(phone, message);
+    let recordSuccess = true;
 
-    record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
-    await record.save();
+    for (const inst of installments) {
+      const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
+      const result = await sendSms(phone, message);
 
-    if (result.success) {
-      successCount++;
-    } else {
-      failCount++;
-      errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
+      if (result.success) {
+        successCount++;
+      } else {
+        recordSuccess = false;
+        failCount++;
+        errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
+      }
     }
+
+    record.data.set(statusFieldName, recordSuccess ? 'sent' : 'failed');
+    await record.save();
   }
 
   revalidatePath(`/collections/${collectionId}`);
