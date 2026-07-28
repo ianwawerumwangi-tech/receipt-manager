@@ -437,9 +437,31 @@ export function CollectionViewClient({
     if (isEditing) {
       if (field.type === 'boolean') {
         return (
+      const handleInputKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          setEditingCell(null);
+          setTimeout(() => {
+            handleSaveBulk();
+          }, 50);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setEditingCell(null);
+        }
+      };
+
+      if (field.type === 'boolean') {
+        return (
           <Checkbox
             checked={currentVal === true}
             onCheckedChange={(checked) => handleDraftChange(recordId, field.name, checked === true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                setEditingCell(null);
+                setTimeout(() => handleSaveBulk(), 50);
+              }
+            }}
             onBlur={() => setEditingCell(null)}
             autoFocus
           />
@@ -452,6 +474,7 @@ export function CollectionViewClient({
             type="number"
             value={currentVal ?? ''}
             onChange={(e) => handleDraftChange(recordId, field.name, e.target.value !== '' ? Number(e.target.value) : '')}
+            onKeyDown={handleInputKeyDown}
             onBlur={() => setEditingCell(null)}
             className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
             autoFocus
@@ -465,6 +488,7 @@ export function CollectionViewClient({
             type="date"
             value={currentVal ?? ''}
             onChange={(e) => handleDraftChange(recordId, field.name, e.target.value)}
+            onKeyDown={handleInputKeyDown}
             onBlur={() => setEditingCell(null)}
             className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
             autoFocus
@@ -476,6 +500,7 @@ export function CollectionViewClient({
         <Input
           value={currentVal ?? ''}
           onChange={(e) => handleDraftChange(recordId, field.name, e.target.value)}
+          onKeyDown={handleInputKeyDown}
           onBlur={() => setEditingCell(null)}
           className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
           autoFocus
