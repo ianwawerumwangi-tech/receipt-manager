@@ -882,9 +882,9 @@ export function CollectionViewClient({
         {/* Records Section */}
         <Card>
           <CardHeader className="pb-3 sticky top-0 bg-card z-20 border-b shadow-sm">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <CardTitle className="text-lg">Records</CardTitle>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                 {isEditMode ? (
                   <>
                     <Button

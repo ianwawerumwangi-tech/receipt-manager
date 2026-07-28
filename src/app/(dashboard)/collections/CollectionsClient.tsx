@@ -72,7 +72,7 @@ export function CollectionsClient({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <ImportDialog onSuccess={() => router.refresh()} />
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button><Plus className="h-4 w-4 mr-2" />New Collection</Button>} />
