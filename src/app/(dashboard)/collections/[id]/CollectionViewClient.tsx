@@ -181,7 +181,7 @@ export function CollectionViewClient({
   const [smsDialogOpen, setSmsDialogOpen] = useState(false);
   const [smsRecord, setSmsRecord] = useState<RecordItem | null>(null);
   const [smsInstallments, setSmsInstallments] = useState<{ amount: number; rct: string }[]>([]);
-  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number>(0);
+  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number | 'all'>('all');
 
   const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
     if (record.data && Array.isArray(record.data._installments)) {
@@ -239,7 +239,7 @@ export function CollectionViewClient({
     if (insts.length > 1) {
       setSmsRecord(record);
       setSmsInstallments(insts);
-      setSelectedInstallmentIndex(0);
+      setSelectedInstallmentIndex('all');
       setSmsDialogOpen(true);
     } else {
       handleSendRowSms(record._id, insts[0]);
@@ -248,7 +248,7 @@ export function CollectionViewClient({
 
   const handleConfirmSendSms = async () => {
     if (!smsRecord || smsInstallments.length === 0) return;
-    const installment = smsInstallments[selectedInstallmentIndex];
+    const installment = selectedInstallmentIndex === 'all' ? undefined : smsInstallments[selectedInstallmentIndex as number];
     setSmsDialogOpen(false);
     await handleSendRowSms(smsRecord._id, installment);
   };
@@ -1097,6 +1097,28 @@ export function CollectionViewClient({
               This payment has multiple installments or transaction IDs. Please select which installment to reference in the SMS:
             </p>
             <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
+              <div
+                onClick={() => setSelectedInstallmentIndex('all')}
+                className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
+                  selectedInstallmentIndex === 'all'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                    : 'hover:bg-muted/50 border-muted'
+                }`}
+              >
+                <div className="flex items-center gap-3 text-left">
+                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === 'all' ? 'border-primary' : 'border-muted'}`}>
+                    {selectedInstallmentIndex === 'all' && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
+                  </div>
+                  <div>
+                    <span className="font-semibold text-sm">Send All {smsInstallments.length} Transactions</span>
+                    <p className="text-xs text-muted-foreground">Sends individual SMS for each transaction receipt</p>
+                  </div>
+                </div>
+                <span className="font-bold text-sm text-primary">
+                  {smsInstallments.length} SMSs
+                </span>
+              </div>
+
               {smsInstallments.map((inst, index) => (
                 <div
                   key={index}
@@ -1112,7 +1134,7 @@ export function CollectionViewClient({
                       {selectedInstallmentIndex === index && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
                     </div>
                     <div>
-                      <span className="font-semibold text-sm">Installment {index + 1}</span>
+                      <span className="font-semibold text-sm">Transaction {index + 1}</span>
                       <p className="text-xs text-muted-foreground">Tx ID: {inst.rct || 'N/A'}</p>
                     </div>
                   </div>

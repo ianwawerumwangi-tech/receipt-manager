@@ -239,11 +239,9 @@ export async function sendRecordSmsAction(
 
   const fields = await Field.find({ collectionId }).lean();
   
-  // Find name, phone, amount, receipt, and balance fields
   const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
   const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
   
-  // Prefer rent paid candidates first
   const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
   let amountField = null;
   for (const candidate of amountFieldCandidates) {
@@ -259,34 +257,14 @@ export async function sendRecordSmsAction(
     return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
   }
 
-  const phone = String(record.data.get(phoneField.name) || '').trim();
-  const name = String(record.data.get(nameField?.name || '') || 'Customer').trim();
+  const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+  const phone = String(recordDataObj[phoneField.name] || '').trim();
+  const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
   
-  // Use installment values if provided, otherwise default to full record values
-  const amount = installment 
-    ? installment.amount 
-    : (amountField ? parseMathExpression(record.data.get(amountField.name)) : 0);
-    
-  const rct = installment 
-    ? installment.rct 
-    : String(rctField ? record.data.get(rctField.name) || '' : '').trim();
-
   if (!phone) {
     return { error: 'Phone number is empty for this record.' };
   }
 
-  const balanceVal = balanceField ? record.data.get(balanceField.name) : null;
-  const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
-  const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
-  const balanceStr = displayBal !== null
-    ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
-    : '';
-
-  const message = `Dear ${name}, We have received your payment of KES ${amount.toLocaleString()}. Receipt No: ${rct}.${balanceStr} Thank you.`;
-
-  const result = await sendSms(phone, message);
-
-  // If SMS Status field doesn't exist, dynamically add it to the schema
   let statusFieldName = 'SMS Status';
   if (!smsStatusField) {
     await Field.create({
@@ -299,17 +277,47 @@ export async function sendRecordSmsAction(
     statusFieldName = smsStatusField.name;
   }
 
-  // Update record's data map
-  record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
+  const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
+  const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
+  const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
+  const balanceStr = displayBal !== null
+    ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
+    : '';
+
+  let installmentsToSend: { amount: number; rct: string }[] = [];
+  if (installment) {
+    installmentsToSend = [installment];
+  } else {
+    installmentsToSend = extractRecordInstallments(recordDataObj, fields);
+    if (installmentsToSend.length === 0) {
+      const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+      const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
+      installmentsToSend = [{ amount: defaultAmount, rct: defaultRct }];
+    }
+  }
+
+  let allSuccess = true;
+  let lastError = '';
+
+  for (const inst of installmentsToSend) {
+    const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
+    const result = await sendSms(phone, message);
+    if (!result.success) {
+      allSuccess = false;
+      lastError = result.error || 'Failed to send SMS';
+    }
+  }
+
+  record.data.set(statusFieldName, allSuccess ? 'sent' : 'failed');
   await record.save();
 
   revalidatePath(`/collections/${collectionId}`);
 
-  if (!result.success) {
-    return { error: result.error || 'Failed to send SMS' };
+  if (!allSuccess) {
+    return { error: lastError || 'Failed to send SMS' };
   }
 
-  return { success: true };
+  return { success: true, count: installmentsToSend.length };
 }
 
 export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId: string) {
