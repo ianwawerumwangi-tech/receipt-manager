@@ -432,6 +432,7 @@ export async function importSpreadsheet(data: {
     }
 
     revalidatePath(`/collections/${data.collectionId}`);
+    revalidatePath('/');
     return { success: true, count: importCount };
   } catch (error: any) {
     return { error: error.message || 'Failed to import data' };
@@ -514,6 +515,7 @@ export async function importNewCollection(data: {
     }
 
     revalidatePath('/collections');
+    revalidatePath('/');
     return { success: true, collectionId: lastCollectionId, count: totalImported };
   } catch (error: any) {
     return { error: error.message || 'Failed to create and import collection' };

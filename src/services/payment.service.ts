@@ -181,6 +181,7 @@ export async function getDashboardData() {
       amount,
       smsStatus: sms,
       createdAt: r.createdAt,
+      updatedAt: (r as any).updatedAt || r.createdAt,
     });
   }
 
@@ -201,10 +202,11 @@ export async function getDashboardData() {
       amount: p.amount || 0,
       smsStatus: sms,
       createdAt: p.createdAt,
+      updatedAt: (p as any).updatedAt || p.createdAt,
     });
   }
 
-  mappedPayments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  mappedPayments.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
 
   return {
     todayPayments: totalPaymentsCount,

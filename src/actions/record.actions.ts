@@ -146,6 +146,7 @@ export async function createRecord(data: {
   });
 
   revalidatePath(`/collections/${data.collectionId}`);
+  revalidatePath('/');
   return { success: true };
 }
 
@@ -162,6 +163,7 @@ export async function updateRecord(id: string, collectionId: string, fieldData: 
 
   await Record.findByIdAndUpdate(id, { data: fieldData });
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
   return { success: true };
 }
 
@@ -189,6 +191,7 @@ export async function deleteRecord(id: string, collectionId: string) {
   await dbConnect();
   await Record.findByIdAndDelete(id);
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
   return { success: true };
 }
 
@@ -221,6 +224,7 @@ export async function updateRecordsBulk(
   }
 
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
   return { success: true };
 }
 
@@ -313,6 +317,7 @@ export async function sendRecordSmsAction(
   await record.save();
 
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
 
   if (!allSuccess) {
     return { error: lastError || 'Failed to send SMS' };
@@ -427,6 +432,7 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   }
 
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
   return {
     success: failCount === 0,
     successCount,
@@ -472,5 +478,6 @@ export async function createRecordsBulk(
   }
 
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/');
   return { success: true };
 }
