@@ -4,6 +4,8 @@ import { User } from '@/models/User';
 import { Customer } from '@/models/Customer';
 import { hashPassword } from '@/lib/auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     await dbConnect();

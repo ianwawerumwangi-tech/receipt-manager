@@ -124,23 +124,29 @@ export async function getPayments(options?: {
 export async function getDashboardData() {
   await dbConnect();
 
-  const records = await RecordModel.find().sort({ createdAt: -1 }).lean();
+  const [records, directPayments] = await Promise.all([
+    RecordModel.find().sort({ createdAt: -1 }).lean(),
+    Payment.find()
+      .populate('customer', 'name')
+      .sort({ createdAt: -1 })
+      .lean() as Promise<any[]>,
+  ]);
 
   const getRecordValue = (data: any, patterns: string[]) => {
     const obj = data instanceof Map ? Object.fromEntries(data) : (data as Record<string, any>);
     if (!obj) return null;
     for (const key of Object.keys(obj)) {
-      if (patterns.includes(key.toUpperCase())) {
+      if (patterns.includes(key.trim().toUpperCase())) {
         return obj[key];
       }
     }
     return null;
   };
 
-  const rctPatterns = ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'];
-  const namePatterns = ['NAME', 'CUSTOMER NAME', 'CUSTOMER'];
-  const amountPatterns = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
-  const smsPatterns = ['SMS STATUS', 'SMS_STATUS'];
+  const rctPatterns = ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT', 'RCT'];
+  const namePatterns = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'CLIENT NAME'];
+  const amountPatterns = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID', 'PAID'];
+  const smsPatterns = ['SMS STATUS', 'SMS_STATUS', 'SMS STATUS ', 'SMS', 'STATUS'];
 
   let totalPaymentsCount = 0;
   let totalRevenue = 0;
@@ -154,7 +160,8 @@ export async function getDashboardData() {
     const rct = getRecordValue(data, rctPatterns);
     const name = getRecordValue(data, namePatterns) || 'N/A';
     const amount = Number(getRecordValue(data, amountPatterns) || 0);
-    const sms = String(getRecordValue(data, smsPatterns) || 'pending').toLowerCase();
+    const smsVal = getRecordValue(data, smsPatterns);
+    const sms = String(smsVal || 'pending').toLowerCase();
 
     if (rct) {
       totalPaymentsCount++;
@@ -176,6 +183,28 @@ export async function getDashboardData() {
       createdAt: r.createdAt,
     });
   }
+
+  for (const p of directPayments) {
+    totalPaymentsCount++;
+    totalRevenue += p.amount || 0;
+    const sms = String(p.smsStatus || 'pending').toLowerCase();
+    if (sms === 'sent') {
+      smsSent++;
+    } else if (sms === 'failed') {
+      smsFailed++;
+    }
+
+    mappedPayments.push({
+      _id: p._id.toString(),
+      receiptNumber: p.receiptNumber || 'N/A',
+      customer: { name: p.customer?.name || 'N/A' },
+      amount: p.amount || 0,
+      smsStatus: sms,
+      createdAt: p.createdAt,
+    });
+  }
+
+  mappedPayments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return {
     todayPayments: totalPaymentsCount,

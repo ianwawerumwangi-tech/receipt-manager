@@ -8,12 +8,6 @@ import '@/models/Collection';
 import '@/models/Field';
 import '@/models/Record';
 
-const MONGODB_URI = process.env.MONGODB_URI!;
-
-if (!MONGODB_URI) {
-  throw new Error('Please define the MONGODB_URI environment variable');
-}
-
 interface MongooseCache {
   conn: typeof mongoose | null;
   promise: Promise<typeof mongoose> | null;
@@ -30,9 +24,17 @@ if (!global.mongooseCache) {
 }
 
 export async function dbConnect(): Promise<typeof mongoose> {
+  const MONGODB_URI = process.env.MONGODB_URI;
+
+  if (!MONGODB_URI) {
+    throw new Error('Please define the MONGODB_URI environment variable');
+  }
+
   if (cached.conn) return cached.conn;
 
-  cached.promise = mongoose.connect(MONGODB_URI);
+  if (!cached.promise) {
+    cached.promise = mongoose.connect(MONGODB_URI);
+  }
 
   try {
     cached.conn = await cached.promise;

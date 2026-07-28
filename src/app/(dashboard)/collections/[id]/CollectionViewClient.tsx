@@ -257,22 +257,59 @@ export function CollectionViewClient({
     if (selectedRecordIds.length === 0) return;
 
     setSendingSmsBulk(true);
+    const toastId = toast.loading(`Preparing to send SMS to ${selectedRecordIds.length} records...`);
+
+    let totalSuccessCount = 0;
+    let totalFailCount = 0;
+    const allErrors: string[] = [];
+
+    // Client-side batch size of 10 to ensure each Server Action runs under 3s on Vercel Free
+    const CLIENT_BATCH_SIZE = 10;
+    const totalBatches = Math.ceil(selectedRecordIds.length / CLIENT_BATCH_SIZE);
+
     try {
-      const res = await sendRecordsSmsBulkAction(selectedRecordIds, collection._id);
-      if (res.success) {
-        if (res.failCount > 0) {
-          toast.error(`SMS bulk complete with errors: ${res.successCount} sent, ${res.failCount} failed. Sample Errors: ${res.errors?.slice(0, 3).join('; ')}`);
+      for (let i = 0; i < selectedRecordIds.length; i += CLIENT_BATCH_SIZE) {
+        const batchIds = selectedRecordIds.slice(i, i + CLIENT_BATCH_SIZE);
+        const currentBatchNum = Math.floor(i / CLIENT_BATCH_SIZE) + 1;
+
+        toast.loading(
+          `Sending SMS batch ${currentBatchNum} of ${totalBatches} (${batchIds.length} records)...`,
+          { id: toastId }
+        );
+
+        const res = await sendRecordsSmsBulkAction(batchIds, collection._id);
+
+        if ('error' in res && res.error && !res.successCount) {
+          totalFailCount += batchIds.length;
+          allErrors.push(`Batch ${currentBatchNum}: ${res.error}`);
         } else {
-          toast.success(`SMS sent successfully (${res.successCount} messages sent).`);
+          totalSuccessCount += res.successCount || 0;
+          totalFailCount += res.failCount || 0;
+          if (res.errors) {
+            allErrors.push(...res.errors);
+          }
         }
-        setSelectedRecordIds([]);
-        router.refresh();
-      } else {
-        toast.error(res.error || 'Failed to send bulk SMS');
       }
-    } catch (err) {
+
+      toast.dismiss(toastId);
+
+      if (totalFailCount > 0) {
+        toast.error(
+          `Bulk SMS completed with errors: ${totalSuccessCount} sent, ${totalFailCount} failed. ${
+            allErrors.length > 0 ? `Sample Errors: ${allErrors.slice(0, 2).join('; ')}` : ''
+          }`,
+          { duration: 6000 }
+        );
+      } else {
+        toast.success(`SMS sent successfully! (${totalSuccessCount} messages sent).`, { duration: 4000 });
+      }
+
+      setSelectedRecordIds([]);
+      router.refresh();
+    } catch (err: any) {
       console.error(err);
-      toast.error('An error occurred during bulk SMS sending');
+      toast.dismiss(toastId);
+      toast.error(err?.message || 'An error occurred during bulk SMS sending');
     } finally {
       setSendingSmsBulk(false);
     }

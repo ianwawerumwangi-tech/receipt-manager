@@ -309,6 +309,7 @@ export async function sendRecordSmsAction(
   }
 
   record.data.set(statusFieldName, allSuccess ? 'sent' : 'failed');
+  record.markModified('data');
   await record.save();
 
   revalidatePath(`/collections/${collectionId}`);
@@ -362,56 +363,76 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   let failCount = 0;
   const errors: string[] = [];
 
-  for (const record of records) {
-    const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
-    
-    const phone = String(recordDataObj[phoneField.name] || '').trim();
-    const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
-    
-    if (!phone) {
-      record.data.set(statusFieldName, 'failed');
-      await record.save();
-      failCount++;
-      errors.push(`${name}: Phone number is empty.`);
-      continue;
-    }
+  // Process in concurrent batches of 5 to avoid Vercel timeouts & speed up requests
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const chunk = records.slice(i, i + BATCH_SIZE);
 
-    let installments = extractRecordInstallments(recordDataObj, fields);
-    
-    if (installments.length === 0) {
-      const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
-      const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
-      installments = [{ amount: defaultAmount, rct: defaultRct }];
-    }
+    await Promise.all(
+      chunk.map(async (record) => {
+        const recordDataObj =
+          record.data instanceof Map
+            ? Object.fromEntries(record.data)
+            : (record.data as Record<string, any>);
 
-    const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
-    const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
-    const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
-    const balanceStr = displayBal !== null
-      ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
-      : '';
+        const phone = String(recordDataObj[phoneField.name] || '').trim();
+        const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
 
-    let recordSuccess = true;
+        if (!phone) {
+          record.data.set(statusFieldName, 'failed');
+          record.markModified('data');
+          await record.save();
+          failCount++;
+          errors.push(`${name}: Phone number is empty.`);
+          return;
+        }
 
-    for (const inst of installments) {
-      const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
-      const result = await sendSms(phone, message);
+        let installments = extractRecordInstallments(recordDataObj, fields);
 
-      if (result.success) {
-        successCount++;
-      } else {
-        recordSuccess = false;
-        failCount++;
-        errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
-      }
-    }
+        if (installments.length === 0) {
+          const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+          const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
+          installments = [{ amount: defaultAmount, rct: defaultRct }];
+        }
 
-    record.data.set(statusFieldName, recordSuccess ? 'sent' : 'failed');
-    await record.save();
+        const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
+        const rawBal =
+          balanceVal !== undefined && balanceVal !== null && balanceVal !== ''
+            ? parseMathExpression(balanceVal)
+            : null;
+        const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
+        const balanceStr =
+          displayBal !== null ? ` Your current balance is KES ${displayBal.toLocaleString()}.` : '';
+
+        let recordSuccess = true;
+
+        for (const inst of installments) {
+          const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
+          const result = await sendSms(phone, message);
+
+          if (result.success) {
+            successCount++;
+          } else {
+            recordSuccess = false;
+            failCount++;
+            errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
+          }
+        }
+
+        record.data.set(statusFieldName, recordSuccess ? 'sent' : 'failed');
+        record.markModified('data');
+        await record.save();
+      })
+    );
   }
 
   revalidatePath(`/collections/${collectionId}`);
-  return { success: true, successCount, failCount, errors: errors.length > 0 ? errors : undefined };
+  return {
+    success: failCount === 0,
+    successCount,
+    failCount,
+    errors: errors.length > 0 ? errors : undefined,
+  };
 }
 
 export async function createRecordsBulk(

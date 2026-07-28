@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { exportPaymentsToExcel } from '@/services/export.service';
 import { getSession } from '@/lib/auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const session = await getSession();

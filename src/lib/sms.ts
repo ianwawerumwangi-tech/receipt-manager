@@ -21,7 +21,7 @@ export function formatPhoneNumber(phone: string): string {
   return cleaned;
 }
 
-async function sendSingleSms(phone: string, message: string): Promise<SmsResult> {
+async function sendSingleSms(phone: string, message: string, retries = 2): Promise<SmsResult> {
   let apiUrl = process.env.BONGATECH_API_URL || 'https://bulk.bongatech.co.ke/api/v1/send-sms';
   if (apiUrl.includes('api.bongatech.co.ke/sms/v1/send') || apiUrl.includes('api.bongatech.co.ke')) {
     apiUrl = 'https://bulk.bongatech.co.ke/api/v1/send-sms';
@@ -57,7 +57,14 @@ async function sendSingleSms(phone: string, message: string): Promise<SmsResult>
         sender: senderId,
         message,
       }),
+      signal: AbortSignal.timeout(8000),
     });
+
+    if (response.status === 429 && retries > 0) {
+      console.warn(`[BongaTech SMS Rate Limit] 429 Too Many Requests for ${formattedPhone}. Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      return sendSingleSms(phone, message, retries - 1);
+    }
 
     const responseText = await response.text();
     let data: any = {};
