@@ -70,7 +70,10 @@ function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: E
 }
 
 function findHeaderRow(sheet: ExcelJS.Worksheet): number {
-  const headerIndicators = ['HSE NO', 'HOUSE NO', 'NAME', 'TENANT', 'CUSTOMER', 'RCT NO', 'RECEIPT NUMBER', 'PHONE NO', 'RENT PAID'];
+  const headerIndicators = [
+    'HSE NO', 'HOUSE NO', 'NAME', 'TENANT', 'CUSTOMER', 'RCT NO', 'RECEIPT NUMBER', 'PHONE NO', 'RENT PAID',
+    'CURRENT', 'PREVIOUS', 'PREV', 'CURR', 'CONSUMPTION', 'WATER BILL', 'BAL B/D', 'TOTAL BILL'
+  ];
   
   for (let r = 1; r <= Math.min(sheet.rowCount, 20); r++) {
     const row = sheet.getRow(r);
@@ -98,11 +101,12 @@ export async function analyzeSpreadsheet(base64Data: string) {
     await workbook.xlsx.load(buffer as any);
 
     const sheets = workbook.worksheets.map(s => s.name);
-    const latestSheet = findLatestMonthSheet(sheets);
+    const firstSheet = sheets[0] || '';
+    const latestSheet = firstSheet || findLatestMonthSheet(sheets);
     
     let detectedHeaderRow = 8;
     if (workbook.worksheets.length > 0) {
-      const targetSheet = workbook.getWorksheet(latestSheet) || workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
+      const targetSheet = workbook.getWorksheet(firstSheet) || workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
       detectedHeaderRow = findHeaderRow(targetSheet);
     }
 

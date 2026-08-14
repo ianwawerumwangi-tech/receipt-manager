@@ -178,10 +178,6 @@ export function CollectionViewClient({
   // SMS States & Handlers
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [sendingSmsBulk, setSendingSmsBulk] = useState(false);
-  const [smsDialogOpen, setSmsDialogOpen] = useState(false);
-  const [smsRecord, setSmsRecord] = useState<RecordItem | null>(null);
-  const [smsInstallments, setSmsInstallments] = useState<{ amount: number; rct: string }[]>([]);
-  const [selectedInstallmentIndex, setSelectedInstallmentIndex] = useState<number | 'all'>('all');
 
   const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
     if (record.data && Array.isArray(record.data._installments)) {
@@ -220,9 +216,9 @@ export function CollectionViewClient({
     return installments;
   }, [fields]);
 
-  const handleSendRowSms = async (recordId: string, installment?: { amount: number; rct: string }) => {
+  const handleSendRowSms = async (recordId: string) => {
     toast.promise(
-      sendRecordSmsAction(recordId, collection._id, installment).then((res) => {
+      sendRecordSmsAction(recordId, collection._id).then((res) => {
         if (res.error) throw new Error(res.error);
         return res;
       }),
@@ -235,22 +231,7 @@ export function CollectionViewClient({
   };
 
   const handleSmsButtonClick = (record: RecordItem) => {
-    const insts = getRecordInstallments(record);
-    if (insts.length > 1) {
-      setSmsRecord(record);
-      setSmsInstallments(insts);
-      setSelectedInstallmentIndex('all');
-      setSmsDialogOpen(true);
-    } else {
-      handleSendRowSms(record._id, insts[0]);
-    }
-  };
-
-  const handleConfirmSendSms = async () => {
-    if (!smsRecord || smsInstallments.length === 0) return;
-    const installment = selectedInstallmentIndex === 'all' ? undefined : smsInstallments[selectedInstallmentIndex as number];
-    setSmsDialogOpen(false);
-    await handleSendRowSms(smsRecord._id, installment);
+    handleSendRowSms(record._id);
   };
 
   const handleBulkSendSms = async () => {
@@ -1143,79 +1124,6 @@ export function CollectionViewClient({
         confirmLabel="Delete"
       />
 
-      {/* SMS Installment Dialog */}
-      <Dialog open={smsDialogOpen} onOpenChange={setSmsDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5 text-primary" />
-              Select Installment to Receipt
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <p className="text-sm text-muted-foreground">
-              This payment has multiple installments or transaction IDs. Please select which installment to reference in the SMS:
-            </p>
-            <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
-              <div
-                onClick={() => setSelectedInstallmentIndex('all')}
-                className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
-                  selectedInstallmentIndex === 'all'
-                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                    : 'hover:bg-muted/50 border-muted'
-                }`}
-              >
-                <div className="flex items-center gap-3 text-left">
-                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === 'all' ? 'border-primary' : 'border-muted'}`}>
-                    {selectedInstallmentIndex === 'all' && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
-                  </div>
-                  <div>
-                    <span className="font-semibold text-sm">Send All {smsInstallments.length} Transactions</span>
-                    <p className="text-xs text-muted-foreground">Sends individual SMS for each transaction receipt</p>
-                  </div>
-                </div>
-                <span className="font-bold text-sm text-primary">
-                  {smsInstallments.length} SMSs
-                </span>
-              </div>
-
-              {smsInstallments.map((inst, index) => (
-                <div
-                  key={index}
-                  onClick={() => setSelectedInstallmentIndex(index)}
-                  className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
-                    selectedInstallmentIndex === index
-                      ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                      : 'hover:bg-muted/50 border-muted'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 text-left">
-                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedInstallmentIndex === index ? 'border-primary' : 'border-muted'}`}>
-                      {selectedInstallmentIndex === index && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
-                    </div>
-                    <div>
-                      <span className="font-semibold text-sm">Transaction {index + 1}</span>
-                      <p className="text-xs text-muted-foreground">Tx ID: {inst.rct || 'N/A'}</p>
-                    </div>
-                  </div>
-                  <span className="font-bold text-sm text-primary">
-                    KES {inst.amount.toLocaleString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-            
-            <div className="flex gap-2 justify-end pt-2">
-              <Button variant="outline" onClick={() => setSmsDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleConfirmSendSms}>
-                Send Receipt SMS
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

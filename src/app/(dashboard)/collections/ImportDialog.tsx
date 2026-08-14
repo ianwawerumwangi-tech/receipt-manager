@@ -151,7 +151,7 @@ export function ImportDialog({
           setHeaderRow(res.detectedHeaderRow);
         }
         if (res.sheets && res.sheets.length > 0) {
-          const defaultSheet = res.latestSheet || res.sheets[res.sheets.length - 1];
+          const defaultSheet = res.sheets[0] || res.latestSheet;
           setSelectedSheet(defaultSheet);
           const baseName = selectedFile.name.replace(/\.[^/.]+$/, "");
           setNewCollectionName(`${baseName} - ${defaultSheet}`);

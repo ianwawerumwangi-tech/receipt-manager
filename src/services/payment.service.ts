@@ -66,10 +66,13 @@ export async function sendPaymentSms(paymentId: string) {
 
   if (!payment) throw new Error('Payment not found');
 
+  const monthStr = new Date(payment.paymentDate).toLocaleString('default', { month: 'long', year: 'numeric' });
   const message = buildSmsTemplate({
     customerName: payment.customer.name,
-    amount: payment.amount,
-    receiptNumber: payment.receiptNumber,
+    totalAmount: payment.amount,
+    houseNumber: 'N/A',
+    monthOfReceipt: monthStr,
+    balance: 0,
   });
 
   const result = await sendSms(payment.customer.phone, message);

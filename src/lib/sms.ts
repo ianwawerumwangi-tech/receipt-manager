@@ -141,18 +141,40 @@ export async function sendSms(phone: string, message: string): Promise<SmsResult
 
 export function buildSmsTemplate(params: {
   customerName: string;
-  amount: number;
-  receiptNumber: string;
+  totalAmount: number | string;
+  houseNumber: string;
+  monthOfReceipt: string;
+  balance: number | string;
 }): string {
-  return `Dear ${params.customerName},
+  const formattedAmount = typeof params.totalAmount === 'number' ? params.totalAmount.toLocaleString() : params.totalAmount;
+  const formattedBalance = typeof params.balance === 'number' ? params.balance.toLocaleString() : params.balance;
+  return `Dear ${params.customerName}, you are in receipt of KES ${formattedAmount}, for house #${params.houseNumber} for the month of ${params.monthOfReceipt}. Your current balance is KES ${formattedBalance}. Thank you.`;
+}
 
-We have received your payment of
-KES ${params.amount.toLocaleString()}
+export function buildWaterBillSmsTemplate(params: {
+  customerName: string;
+  month: string;
+  previousAmount: number | string;
+  currentAmount: number | string;
+  amountPerUnit: number | string;
+  totalAmount: number | string;
+}): string {
+  const formattedPrev = typeof params.previousAmount === 'number' ? params.previousAmount.toLocaleString() : (params.previousAmount ?? 0);
+  const formattedCurr = typeof params.currentAmount === 'number' ? params.currentAmount.toLocaleString() : (params.currentAmount ?? 0);
 
-Receipt No:
-${params.receiptNumber}
+  let formattedPerUnit = String(params.amountPerUnit ?? 0);
+  if (typeof params.amountPerUnit === 'number') {
+    formattedPerUnit = `KES ${params.amountPerUnit.toLocaleString()}`;
+  } else if (formattedPerUnit && !formattedPerUnit.toUpperCase().includes('KES') && !isNaN(Number(formattedPerUnit))) {
+    formattedPerUnit = `KES ${Number(formattedPerUnit).toLocaleString()}`;
+  }
 
-Thank you.
+  let formattedTotal = String(params.totalAmount ?? 0);
+  if (typeof params.totalAmount === 'number') {
+    formattedTotal = `KES ${params.totalAmount.toLocaleString()}`;
+  } else if (formattedTotal && !formattedTotal.toUpperCase().includes('KES') && !isNaN(Number(formattedTotal))) {
+    formattedTotal = `KES ${Number(formattedTotal).toLocaleString()}`;
+  }
 
-Company Name`;
+  return `Dear ${params.customerName}, your ${params.month} water bill: Previous ${formattedPrev}, current ${formattedCurr}, per unit ${formattedPerUnit}. Total ${formattedTotal}. Thank you.`;
 }

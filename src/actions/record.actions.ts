@@ -2,11 +2,12 @@
 
 import { revalidatePath } from 'next/cache';
 import { dbConnect } from '@/lib/mongodb';
+import { Collection } from '@/models/Collection';
 import { Record } from '@/models/Record';
 import { Field } from '@/models/Field';
 import { getSession } from '@/lib/auth';
 import { serialize, extractRecordInstallments } from '@/lib/utils';
-import { sendSms } from '@/lib/sms';
+import { sendSms, buildSmsTemplate, buildWaterBillSmsTemplate } from '@/lib/sms';
 
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
@@ -228,6 +229,146 @@ export async function updateRecordsBulk(
   return { success: true };
 }
 
+async function buildRecordSmsPayload(
+  recordDataObj: Record<string, any>,
+  fields: any[],
+  collectionName?: string
+) {
+  // Name
+  const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
+  const nameField = fields.find(f => nameFieldCandidates.includes(f.name.toUpperCase()));
+  const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
+
+  // Phone
+  const phoneFieldCandidates = ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'];
+  const phoneField = fields.find(f => phoneFieldCandidates.includes(f.name.toUpperCase()));
+  const phone = String(recordDataObj[phoneField?.name || ''] || '').trim();
+
+  // Check if collection is a Water Bill collection based on fields or name
+  const isWaterBill = fields.some(f => 
+    ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
+  ) || (collectionName && collectionName.toUpperCase().includes('WATER'));
+
+  // Month
+  const monthFieldCandidates = ['MONTH OF RECEIPT', 'MONTH', 'FOR MONTH', 'FOR THE MONTH OF', 'PERIOD', 'RECEIPT MONTH', 'BILL MONTH'];
+  const monthField = fields.find(f => monthFieldCandidates.includes(f.name.toUpperCase()));
+  let monthStr = String(recordDataObj[monthField?.name || ''] || '').trim();
+
+  if (!monthStr && collectionName) {
+    const months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const upperColl = collectionName.toUpperCase();
+    for (const m of months) {
+      if (upperColl.includes(m)) {
+        const yearMatch = upperColl.match(/20\d\d/);
+        monthStr = yearMatch ? `${m} ${yearMatch[0]}` : m;
+        break;
+      }
+    }
+    if (!monthStr) {
+      monthStr = collectionName;
+    }
+  }
+
+  if (!monthStr) {
+    const now = new Date();
+    monthStr = now.toLocaleString('default', { month: 'long', year: 'numeric' });
+  }
+
+  if (isWaterBill) {
+    // Previous Amount
+    const prevField = fields.find(f => ['PREVIOUS', 'PREV', 'PREVIOUS READING', 'PREV READING', 'PREV READ'].includes(f.name.toUpperCase()));
+    const prevVal = prevField ? parseMathExpression(recordDataObj[prevField.name]) : 0;
+
+    // Current Amount
+    const currField = fields.find(f => ['CURRENT', 'CURR', 'CURRENT READING', 'CURR READING', 'CURR READ'].includes(f.name.toUpperCase()));
+    const currVal = currField ? parseMathExpression(recordDataObj[currField.name]) : 0;
+
+    // Total Amount
+    const totalFieldCandidates = ['TOTAL BILL', 'WATER BILL', 'TOTAL', 'TOTAL AMOUNT', 'AMOUNT DUE', 'AMOUNT'];
+    let totalField = null;
+    for (const cand of totalFieldCandidates) {
+      totalField = fields.find(f => f.name.toUpperCase() === cand);
+      if (totalField) break;
+    }
+    const totalVal = totalField ? parseMathExpression(recordDataObj[totalField.name]) : 0;
+
+    // Amount per unit
+    const rateFieldCandidates = ['PER UNIT', 'RATE', 'UNIT RATE', 'AMOUNT PER UNIT', 'PRICE PER UNIT'];
+    let rateField = null;
+    for (const cand of rateFieldCandidates) {
+      rateField = fields.find(f => f.name.toUpperCase() === cand);
+      if (rateField) break;
+    }
+
+    let rateVal = rateField ? parseMathExpression(recordDataObj[rateField.name]) : 0;
+    if (!rateVal) {
+      const consumptionField = fields.find(f => ['CONSUMPTION', 'UNITS', 'UNITS USED'].includes(f.name.toUpperCase()));
+      const consumption = consumptionField ? parseMathExpression(recordDataObj[consumptionField.name]) : (currVal - prevVal);
+      if (consumption > 0 && totalVal > 0) {
+        rateVal = Math.round(totalVal / consumption);
+      } else {
+        rateVal = 150; // default rate per unit if non-calculable
+      }
+    }
+
+    const message = buildWaterBillSmsTemplate({
+      customerName: name,
+      month: monthStr,
+      previousAmount: prevVal,
+      currentAmount: currVal,
+      amountPerUnit: rateVal,
+      totalAmount: totalVal,
+    });
+
+    return {
+      phone,
+      name,
+      message,
+      phoneFieldFound: !!phoneField,
+    };
+  }
+
+  // Payment receipt template
+  const houseFieldCandidates = ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'HOUSE NUMBER', 'UNIT NO', 'UNIT', 'FLAT NO', 'ROOM NO', 'HSE/ROOM', 'HOUSE/ROOM'];
+  const houseField = fields.find(f => houseFieldCandidates.includes(f.name.toUpperCase()));
+  const houseNumber = String(recordDataObj[houseField?.name || ''] || 'N/A').trim();
+
+  const installments = extractRecordInstallments(recordDataObj, fields);
+  let totalAmount = 0;
+  if (installments.length > 0) {
+    totalAmount = installments.reduce((sum, inst) => sum + (Number(inst.amount) || 0), 0);
+  } else {
+    const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID', 'PAID', 'TOTAL PAID', 'TOTAL AMOUNT'];
+    let amountField = null;
+    for (const candidate of amountFieldCandidates) {
+      amountField = fields.find(f => f.name.toUpperCase() === candidate);
+      if (amountField) break;
+    }
+    totalAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+  }
+
+  const balanceFieldCandidates = ['BALANCE', 'BAL', 'OUTSTANDING', 'BAL B/F', 'BAL C/F', 'BAL B/D', 'BAL C/D', 'CURRENT BALANCE'];
+  const balanceField = fields.find(f => balanceFieldCandidates.includes(f.name.toUpperCase()));
+  const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
+  const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
+  const balance = rawBal !== null ? Math.max(0, rawBal) : 0;
+
+  const message = buildSmsTemplate({
+    customerName: name,
+    totalAmount,
+    houseNumber,
+    monthOfReceipt: monthStr,
+    balance,
+  });
+
+  return {
+    phone,
+    name,
+    message,
+    phoneFieldFound: !!phoneField,
+  };
+}
+
 export async function sendRecordSmsAction(
   recordId: string,
   collectionId: string,
@@ -241,34 +382,10 @@ export async function sendRecordSmsAction(
   const record = await Record.findById(recordId);
   if (!record) return { error: 'Record not found' };
 
+  const collection = await Collection.findById(collectionId).lean();
   const fields = await Field.find({ collectionId }).lean();
-  
-  const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
-  const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
-  
-  const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
-  let amountField = null;
-  for (const candidate of amountFieldCandidates) {
-    amountField = fields.find(f => f.name.toUpperCase() === candidate);
-    if (amountField) break;
-  }
 
-  const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
-  const balanceField = fields.find(f => ['BALANCE', 'BAL', 'OUTSTANDING'].includes(f.name.toUpperCase()));
   const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
-
-  if (!phoneField) {
-    return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
-  }
-
-  const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
-  const phone = String(recordDataObj[phoneField.name] || '').trim();
-  const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
-  
-  if (!phone) {
-    return { error: 'Phone number is empty for this record.' };
-  }
-
   let statusFieldName = 'SMS Status';
   if (!smsStatusField) {
     await Field.create({
@@ -281,49 +398,31 @@ export async function sendRecordSmsAction(
     statusFieldName = smsStatusField.name;
   }
 
-  const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
-  const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
-  const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
-  const balanceStr = displayBal !== null
-    ? ` Your current balance is KES ${displayBal.toLocaleString()}.`
-    : '';
+  const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+  const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name);
 
-  let installmentsToSend: { amount: number; rct: string }[] = [];
-  if (installment) {
-    installmentsToSend = [installment];
-  } else {
-    installmentsToSend = extractRecordInstallments(recordDataObj, fields);
-    if (installmentsToSend.length === 0) {
-      const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
-      const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
-      installmentsToSend = [{ amount: defaultAmount, rct: defaultRct }];
-    }
+  if (!payload.phoneFieldFound) {
+    return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
   }
 
-  let allSuccess = true;
-  let lastError = '';
-
-  for (const inst of installmentsToSend) {
-    const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
-    const result = await sendSms(phone, message);
-    if (!result.success) {
-      allSuccess = false;
-      lastError = result.error || 'Failed to send SMS';
-    }
+  if (!payload.phone) {
+    return { error: 'Phone number is empty for this record.' };
   }
 
-  record.data.set(statusFieldName, allSuccess ? 'sent' : 'failed');
+  const result = await sendSms(payload.phone, payload.message);
+
+  record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
   record.markModified('data');
   await record.save();
 
   revalidatePath(`/collections/${collectionId}`);
   revalidatePath('/');
 
-  if (!allSuccess) {
-    return { error: lastError || 'Failed to send SMS' };
+  if (!result.success) {
+    return { error: result.error || 'Failed to send SMS' };
   }
 
-  return { success: true, count: installmentsToSend.length };
+  return { success: true, count: 1 };
 }
 
 export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId: string) {
@@ -332,24 +431,9 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
 
   await dbConnect();
 
+  const collection = await Collection.findById(collectionId).lean();
   const fields = await Field.find({ collectionId }).lean();
-  const nameField = fields.find(f => ['NAME', 'CUSTOMER NAME', 'CUSTOMER'].includes(f.name.toUpperCase()));
-  const phoneField = fields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
-  
-  const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'];
-  let amountField = null;
-  for (const candidate of amountFieldCandidates) {
-    amountField = fields.find(f => f.name.toUpperCase() === candidate);
-    if (amountField) break;
-  }
-
-  const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
-  const balanceField = fields.find(f => ['BALANCE', 'BAL', 'OUTSTANDING'].includes(f.name.toUpperCase()));
   const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
-
-  if (!phoneField) {
-    return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
-  }
 
   let statusFieldName = 'SMS Status';
   if (!smsStatusField) {
@@ -368,7 +452,6 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   let failCount = 0;
   const errors: string[] = [];
 
-  // Process in concurrent batches of 5 to avoid Vercel timeouts & speed up requests
   const BATCH_SIZE = 5;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const chunk = records.slice(i, i + BATCH_SIZE);
@@ -380,51 +463,27 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
             ? Object.fromEntries(record.data)
             : (record.data as Record<string, any>);
 
-        const phone = String(recordDataObj[phoneField.name] || '').trim();
-        const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
+        const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name);
 
-        if (!phone) {
+        if (!payload.phone) {
           record.data.set(statusFieldName, 'failed');
           record.markModified('data');
           await record.save();
           failCount++;
-          errors.push(`${name}: Phone number is empty.`);
+          errors.push(`${payload.name}: Phone number is empty.`);
           return;
         }
 
-        let installments = extractRecordInstallments(recordDataObj, fields);
+        const result = await sendSms(payload.phone, payload.message);
 
-        if (installments.length === 0) {
-          const defaultAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
-          const defaultRct = String(rctField ? recordDataObj[rctField.name] || '' : '').trim();
-          installments = [{ amount: defaultAmount, rct: defaultRct }];
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+          errors.push(`${payload.name} (${payload.phone}): ${result.error || 'Unknown error'}`);
         }
 
-        const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
-        const rawBal =
-          balanceVal !== undefined && balanceVal !== null && balanceVal !== ''
-            ? parseMathExpression(balanceVal)
-            : null;
-        const displayBal = rawBal !== null ? Math.max(0, rawBal) : null;
-        const balanceStr =
-          displayBal !== null ? ` Your current balance is KES ${displayBal.toLocaleString()}.` : '';
-
-        let recordSuccess = true;
-
-        for (const inst of installments) {
-          const message = `Dear ${name}, We have received your payment of KES ${inst.amount.toLocaleString()}. Receipt No: ${inst.rct}.${balanceStr} Thank you.`;
-          const result = await sendSms(phone, message);
-
-          if (result.success) {
-            successCount++;
-          } else {
-            recordSuccess = false;
-            failCount++;
-            errors.push(`${name} (${phone}): ${result.error || 'Unknown error'}`);
-          }
-        }
-
-        record.data.set(statusFieldName, recordSuccess ? 'sent' : 'failed');
+        record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
         record.markModified('data');
         await record.save();
       })
