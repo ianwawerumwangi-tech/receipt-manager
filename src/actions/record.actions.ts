@@ -8,6 +8,7 @@ import { Field } from '@/models/Field';
 import { getSession } from '@/lib/auth';
 import { serialize, extractRecordInstallments } from '@/lib/utils';
 import { sendSms, buildSmsTemplate, buildWaterBillSmsTemplate } from '@/lib/sms';
+import { lookupTenantPhone } from '@/actions/customer.actions';
 
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
@@ -242,7 +243,17 @@ async function buildRecordSmsPayload(
   // Phone
   const phoneFieldCandidates = ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'];
   const phoneField = fields.find(f => phoneFieldCandidates.includes(f.name.toUpperCase()));
-  const phone = String(recordDataObj[phoneField?.name || ''] || '').trim();
+  let phone = String(recordDataObj[phoneField?.name || ''] || '').trim();
+
+  // Automatic lookup fallback if phone is empty
+  if (!phone && name && name !== 'Customer') {
+    const houseField = fields.find(f => ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO'].includes(f.name.toUpperCase()));
+    const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
+    const lookedUpPhone = await lookupTenantPhone(name, houseNo);
+    if (lookedUpPhone) {
+      phone = lookedUpPhone;
+    }
+  }
 
   // Check if collection is a Water Bill collection based on fields or name
   const isWaterBill = fields.some(f => 

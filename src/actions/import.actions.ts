@@ -8,6 +8,7 @@ import { Field } from '@/models/Field';
 import { Record as RecordModel } from '@/models/Record';
 import { getSession } from '@/lib/auth';
 import { findLatestMonthSheet } from '@/lib/utils';
+import { bulkLookupTenantPhones } from '@/actions/customer.actions';
 
 // Evaluates formulas dynamically
 function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: ExcelJS.Workbook): any {
@@ -233,6 +234,33 @@ export async function importSpreadsheet(data: {
       });
     }
 
+    // Ensure PHONE NO field exists on the collection
+    const existingFields = await Field.find({ collectionId: data.collectionId });
+    const hasPhoneField = existingFields.some(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase())) ||
+      data.createNewFields.some(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
+
+    let phoneFieldName = 'PHONE NO';
+    if (!hasPhoneField) {
+      const maxOrder = await Field.findOne({ collectionId: data.collectionId })
+        .sort({ order: -1 })
+        .select('order')
+        .lean();
+
+      await Field.create({
+        collectionId: data.collectionId,
+        name: 'PHONE NO',
+        type: 'phone',
+        required: false,
+        order: (maxOrder?.order ?? -1) + 1,
+      });
+      phoneFieldName = 'PHONE NO';
+    } else {
+      const found = existingFields.find(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
+      if (found) {
+        phoneFieldName = found.name;
+      }
+    }
+
     // Load workbook
     const buffer = Buffer.from(data.base64Data, 'base64');
     const workbook = new ExcelJS.Workbook();
@@ -431,6 +459,50 @@ export async function importSpreadsheet(data: {
     }
 
     if (recordsToInsert.length > 0) {
+      // Auto-lookup missing phone numbers from Customers and other Collections
+      const phoneMap = await bulkLookupTenantPhones();
+      const nameFieldNames = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME'];
+
+      for (const rec of recordsToInsert) {
+        if (!rec.data[phoneFieldName]) {
+          let tenantName = '';
+          for (const nKey of nameFieldNames) {
+            const v = String(rec.data[nKey] || '').trim();
+            if (v) {
+              tenantName = v;
+              break;
+            }
+          }
+
+          if (tenantName) {
+            const upperName = tenantName.toUpperCase();
+            if (phoneMap.has(upperName)) {
+              rec.data[phoneFieldName] = phoneMap.get(upperName);
+            } else {
+              // Partial search
+              for (const [k, v] of phoneMap.entries()) {
+                if (k.includes(upperName) || upperName.includes(k)) {
+                  rec.data[phoneFieldName] = v;
+                  break;
+                }
+              }
+              if (!rec.data[phoneFieldName]) {
+                const parts = upperName.split(/\s+/).filter((p: string) => p.length >= 3);
+                for (const part of parts) {
+                  for (const [k, v] of phoneMap.entries()) {
+                    if (k.includes(part)) {
+                      rec.data[phoneFieldName] = v;
+                      break;
+                    }
+                  }
+                  if (rec.data[phoneFieldName]) break;
+                }
+              }
+            }
+          }
+        }
+      }
+
       await RecordModel.insertMany(recordsToInsert);
       importCount = recordsToInsert.length;
     }
@@ -486,8 +558,14 @@ export async function importNewCollection(data: {
 
       lastCollectionId = collection._id.toString();
 
-      // 2. Create the Fields
-      const fieldsToCreate = data.fields.map((f, idx) => ({
+      // 2. Create the Fields (Ensuring PHONE NO field is always present for SMS sending)
+      const hasPhoneField = data.fields.some(f => ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(f.name.toUpperCase()));
+      const allFields = [...data.fields];
+      if (!hasPhoneField) {
+        allFields.push({ name: 'PHONE NO', type: 'phone' });
+      }
+
+      const fieldsToCreate = allFields.map((f, idx) => ({
         collectionId: collection._id,
         name: f.name,
         type: f.type,

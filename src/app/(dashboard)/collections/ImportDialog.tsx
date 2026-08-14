@@ -208,25 +208,49 @@ export function ImportDialog({
 
       // Populate default new fields mapping state (create all columns by default if new collection, or unmapped if existing)
       const initialNewFields: Record<string, { create: boolean; type: string }> = {};
+      const hasPhoneInHeaders = (res.headers || []).some((h: string) => 
+        ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'].includes(h.toUpperCase())
+      );
+
       (res.headers || []).forEach((header: string) => {
         const isMapped = targetCollectionType !== '__new__' && 
           dynFields.some(f => f.name.toLowerCase().replace(/[^a-z0-9]/g, '') === header.toLowerCase().replace(/[^a-z0-9]/g, ''));
         
+        const upper = header.toUpperCase();
+        let fieldType = 'text';
+        if (upper.includes('PHONE') || upper.includes('MOBILE')) {
+          fieldType = 'phone';
+        } else if (upper.includes('DATE')) {
+          fieldType = 'date';
+        } else if (
+          upper.includes('AMOUNT') || 
+          upper.includes('RENT') || 
+          upper.includes('BAL') || 
+          upper.includes('PAID') || 
+          upper.includes('DUE') ||
+          upper.includes('BALANCE') ||
+          upper.includes('DEPOSIT') ||
+          upper.includes('CONSUMPTION') ||
+          upper.includes('WATER BILL') ||
+          upper.includes('TOTAL BILL') ||
+          upper.includes('PREVIOUS') ||
+          upper.includes('CURRENT')
+        ) {
+          fieldType = 'number';
+        }
+
         // If importing to new collection, we create all columns as fields by default.
         // If importing to existing collection, we only suggest creating unmapped columns.
         initialNewFields[header] = { 
           create: targetCollectionType === '__new__' || !isMapped, 
-          type: header.toUpperCase().includes('AMOUNT') || 
-                header.toUpperCase().includes('RENT') || 
-                header.toUpperCase().includes('BAL') || 
-                header.toUpperCase().includes('PAID') || 
-                header.toUpperCase().includes('DUE') ||
-                header.toUpperCase().includes('BALANCE') ||
-                header.toUpperCase().includes('DEPOSIT')
-                  ? 'number' 
-                  : 'text' 
+          type: fieldType
         };
       });
+
+      if (targetCollectionType === '__new__' && !hasPhoneInHeaders) {
+        initialNewFields['PHONE NO'] = { create: true, type: 'phone' };
+      }
+
       setNewFieldsToCreate(initialNewFields);
 
     } catch (err) {
