@@ -434,6 +434,51 @@ export async function importSpreadsheet(data: {
             }
           }
 
+          // Parse water rate from water bill formula (e.g. =F3*150 or shared formula) or values
+          const waterBillFieldKey = Object.keys(data.mappings).find(
+            (name) => ['WATER BILL', 'WATER', 'TOTAL BILL'].includes(name.toUpperCase())
+          );
+          if (waterBillFieldKey) {
+            const billExcelHeader = data.mappings[waterBillFieldKey];
+            if (billExcelHeader) {
+              const billColIndex = headers.indexOf(billExcelHeader);
+              const billCell = billColIndex !== -1 ? row.getCell(billColIndex + 1) : null;
+              if (billCell && billCell.value && typeof billCell.value === 'object') {
+                const cellVal = billCell.value as any;
+                let formulaStr = String(cellVal.formula || '').toUpperCase();
+                if (!formulaStr && cellVal.sharedFormula) {
+                  const masterCell = sheet.getCell(String(cellVal.sharedFormula));
+                  const masterVal = masterCell?.value as any;
+                  if (masterVal && typeof masterVal === 'object' && masterVal.formula) {
+                    formulaStr = String(masterVal.formula).toUpperCase();
+                  }
+                }
+                const rateMatch = formulaStr.match(/\*\s*(\d+(?:\.\d+)?)/);
+                if (rateMatch) {
+                  const detectedRate = parseFloat(rateMatch[1]);
+                  if (detectedRate > 0) {
+                    recordData['_unitRate'] = detectedRate;
+                  }
+                }
+              }
+            }
+          }
+
+          if (!recordData['_unitRate']) {
+            const consKey = Object.keys(data.mappings).find(n => ['CONSUMPTION', 'UNITS', 'UNITS USED'].includes(n.toUpperCase()));
+            const billKey = Object.keys(data.mappings).find(n => ['WATER BILL', 'WATER'].includes(n.toUpperCase()));
+            if (consKey && billKey) {
+              const cons = Number(recordData[consKey]);
+              const bill = Number(recordData[billKey]);
+              if (cons > 0 && bill > 0) {
+                const calcRate = Math.round(bill / cons);
+                if (calcRate > 0) {
+                  recordData['_unitRate'] = calcRate;
+                }
+              }
+            }
+          }
+
           // Auto-validate/correct receipt numbers mapped to RCT NO / RECEIPT NUMBER
           const rctFieldNames = Object.keys(data.mappings).filter(
             (name) => name.toUpperCase() === 'RCT NO' || name.toUpperCase() === 'RECEIPT NUMBER'

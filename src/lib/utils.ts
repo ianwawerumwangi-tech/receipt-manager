@@ -66,19 +66,31 @@ export function findLatestMonthSheet(sheets: string[]): string {
   return bestSheet;
 }
 
+export function parseMathExpression(val: any): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'object') {
+    if ('result' in val && typeof val.result === 'number') return val.result;
+    if ('result' in val && typeof val.result === 'string') return parseMathExpression(val.result);
+  }
+  const str = String(val).trim();
+  if (!str) return 0;
+  if (/^\d+(\s*\+\s*\d+)*$/.test(str)) {
+    try {
+      return str.split('+').reduce((sum, part) => sum + Number(part.trim()), 0);
+    } catch {
+      return 0;
+    }
+  }
+  const parsed = Number(str.replace(/,/g, ''));
+  return isNaN(parsed) ? 0 : parsed;
+}
+
 export function extractRecordInstallments(
   recordData: Record<string, any>,
   fields: { name: string; type?: string }[]
 ): { amount: number; rct: string }[] {
   if (!recordData) return [];
-
-  const insts = recordData._installments;
-  if (Array.isArray(insts) && insts.length > 0) {
-    return insts.map((i: any) => ({
-      amount: typeof i.amount === 'number' ? i.amount : Number(i.amount) || 0,
-      rct: String(i.rct || '').trim(),
-    }));
-  }
 
   const amountField = fields.find((f) =>
     ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase())
@@ -89,6 +101,24 @@ export function extractRecordInstallments(
 
   const rctVal = String(rctField ? recordData[rctField.name] || '' : '').trim();
   const amountVal = amountField ? recordData[amountField.name] : undefined;
+
+  const insts = recordData._installments;
+  if (Array.isArray(insts) && insts.length > 0) {
+    const currentAmount = parseMathExpression(amountVal);
+    const instsTotal = insts.reduce((sum: number, i: any) => sum + (Number(i.amount) || 0), 0);
+    const currentRct = rctVal.toUpperCase();
+    const instsRcts = insts.map((i: any) => String(i.rct || '').trim().toUpperCase()).filter(Boolean);
+
+    const amountMatches = !amountField || currentAmount === 0 || Math.abs(currentAmount - instsTotal) < 0.01;
+    const rctMatches = !rctField || !currentRct || instsRcts.some((r) => currentRct.includes(r));
+
+    if (amountMatches && rctMatches) {
+      return insts.map((i: any) => ({
+        amount: typeof i.amount === 'number' ? i.amount : Number(i.amount) || 0,
+        rct: String(i.rct || '').trim(),
+      }));
+    }
+  }
 
   const rcts = rctVal ? rctVal.split('/').map((r) => r.trim()).filter(Boolean) : [];
 

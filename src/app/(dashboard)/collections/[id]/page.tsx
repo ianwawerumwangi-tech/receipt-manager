@@ -5,6 +5,8 @@ import { getFields } from '@/actions/field.actions';
 import { getRecords } from '@/actions/record.actions';
 import { notFound } from 'next/navigation';
 
+export const dynamic = 'force-dynamic';
+
 export default async function CollectionDetailPage({
   params,
 }: {

@@ -68,6 +68,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ImportDialog } from '../ImportDialog';
+import { extractRecordInstallments } from '@/lib/utils';
 
 type FieldType = 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';
 
@@ -119,7 +120,7 @@ function parseMathExpression(val: any): number {
       return 0;
     }
   }
-  const parsed = Number(str);
+  const parsed = Number(str.replace(/,/g, ''));
   return isNaN(parsed) ? 0 : parsed;
 }
 
@@ -180,41 +181,33 @@ export function CollectionViewClient({
   const [sendingSmsBulk, setSendingSmsBulk] = useState(false);
 
   const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
-    if (record.data && Array.isArray(record.data._installments)) {
-      return record.data._installments as { amount: number; rct: string }[];
-    }
-    
-    const amountField = fields.find(f => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT'].includes(f.name.toUpperCase()));
-    const rctField = fields.find(f => ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase()));
-    
-    if (!amountField || !rctField) return [];
-    
-    const rctVal = String(record.data[rctField.name] || '').trim();
-    const amountVal = record.data[amountField.name];
-    
-    if (!rctVal) return [];
-    
-    const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
-    let amounts: number[] = [];
-    if (typeof amountVal === 'string' && amountVal.includes('+')) {
-      amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
-    } else if (typeof amountVal === 'number') {
-      amounts = [amountVal];
-    } else if (typeof amountVal === 'string') {
-      const parsed = Number(amountVal);
-      if (!isNaN(parsed)) amounts = [parsed];
-    }
-    
-    const count = Math.max(amounts.length, rcts.length);
-    const installments = [];
-    for (let i = 0; i < count; i++) {
-      installments.push({
-        amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
-        rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
-      });
-    }
-    return installments;
+    return extractRecordInstallments(record.data, fields);
   }, [fields]);
+
+  // Detect collection-wide water rate from schema, stored _unitRate, or recorded readings
+  const collectionWaterRate = useMemo(() => {
+    const rateField = fields.find((f) => ['PER UNIT', 'RATE', 'UNIT RATE', 'AMOUNT PER UNIT', 'PRICE PER UNIT'].includes(f.name.toUpperCase()));
+    for (const r of records) {
+      if (rateField && parseMathExpression(r.data[rateField.name]) > 0) {
+        return parseMathExpression(r.data[rateField.name]);
+      }
+      if (typeof r.data._unitRate === 'number' && r.data._unitRate > 0) {
+        return r.data._unitRate;
+      }
+      const prevF = fields.find((f) => ['PREVIOUS', 'PREV'].includes(f.name.toUpperCase()));
+      const currF = fields.find((f) => ['CURRENT', 'CURR'].includes(f.name.toUpperCase()));
+      const consF = fields.find((f) => ['CONSUMPTION', 'UNITS'].includes(f.name.toUpperCase()));
+      const totF = fields.find((f) => ['TOTAL BILL', 'WATER BILL', 'TOTAL'].includes(f.name.toUpperCase()));
+      const p = prevF ? parseMathExpression(r.data[prevF.name]) : 0;
+      const c = currF ? parseMathExpression(r.data[currF.name]) : 0;
+      const cons = consF ? parseMathExpression(r.data[consF.name]) : Math.max(0, c - p);
+      const tot = totF ? parseMathExpression(r.data[totF.name]) : 0;
+      if (cons > 0 && tot > 0) {
+        return Math.round(tot / cons);
+      }
+    }
+    return 150;
+  }, [fields, records]);
 
   const handleSendRowSms = async (recordId: string) => {
     toast.promise(
@@ -360,14 +353,55 @@ export function CollectionViewClient({
   };
 
   const handleDraftChange = (recordId: string, fieldName: string, val: any) => {
-    const prev = draftRecords[recordId] || {};
-    setDraftRecords({
-      ...draftRecords,
-      [recordId]: {
-        ...prev,
-        [fieldName]: val,
-      },
-    });
+    const originalRecord = combinedRows.find((r) => r._id === recordId);
+    const prevDraft = draftRecords[recordId] || {};
+    const updatedRow: Record<string, any> = {
+      ...(originalRecord ? originalRecord.data : {}),
+      ...prevDraft,
+      [fieldName]: val,
+    };
+
+    const upperFieldName = fieldName.toUpperCase();
+
+    // 1. Water bill auto-calculations when CURRENT or PREVIOUS changes
+    const currF = fields.find((f) => ['CURRENT', 'CURR', 'CURRENT READING', 'CURR READING'].includes(f.name.toUpperCase()));
+    const prevF = fields.find((f) => ['PREVIOUS', 'PREV', 'PREVIOUS READING', 'PREV READING'].includes(f.name.toUpperCase()));
+    const consF = fields.find((f) => ['CONSUMPTION', 'UNITS', 'UNITS USED'].includes(f.name.toUpperCase()));
+    const waterBillF = fields.find((f) => ['WATER BILL', 'WATER'].includes(f.name.toUpperCase()));
+    const balBdF = fields.find((f) => ['BAL B/D', 'BAL B/F', 'BALANCE B/D', 'BALANCE B/F'].includes(f.name.toUpperCase()));
+    const totalBillF = fields.find((f) => ['TOTAL BILL', 'TOTAL', 'TOTAL AMOUNT'].includes(f.name.toUpperCase()));
+
+    if (currF && prevF && (upperFieldName === currF.name.toUpperCase() || upperFieldName === prevF.name.toUpperCase())) {
+      const cVal = parseMathExpression(updatedRow[currF.name]);
+      const pVal = parseMathExpression(updatedRow[prevF.name]);
+      const isZeroUsage = cVal <= pVal;
+      const newCons = isZeroUsage ? 0 : Math.max(0, cVal - pVal);
+      const newWaterBill = isZeroUsage ? 0 : newCons * collectionWaterRate;
+
+      if (consF) updatedRow[consF.name] = newCons;
+      if (waterBillF) updatedRow[waterBillF.name] = newWaterBill;
+      if (totalBillF) {
+        const balBd = balBdF ? parseMathExpression(updatedRow[balBdF.name]) : 0;
+        updatedRow[totalBillF.name] = newWaterBill + balBd;
+      }
+    }
+
+    // 2. Rent auto-calculations when RENT PAID changes
+    const rentPaidF = fields.find((f) => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
+    const balanceF = fields.find((f) => ['BALANCE', 'BAL', 'CURRENT BALANCE'].includes(f.name.toUpperCase()));
+
+    if (rentPaidF && balanceF && upperFieldName === rentPaidF.name.toUpperCase()) {
+      const rentPaid = parseMathExpression(val);
+      if (totalBillF && updatedRow[totalBillF.name] !== undefined) {
+        const total = parseMathExpression(updatedRow[totalBillF.name]);
+        updatedRow[balanceF.name] = total - rentPaid;
+      }
+    }
+
+    setDraftRecords((prev) => ({
+      ...prev,
+      [recordId]: updatedRow,
+    }));
   };
 
   // Bulk save action
@@ -384,6 +418,14 @@ export function CollectionViewClient({
           merged = { ...(originalRecord ? originalRecord.data : {}), ...data };
         } else {
           merged = { ...data };
+        }
+
+        // Recompute installments from updated values
+        const freshInsts = extractRecordInstallments(merged, fields);
+        if (freshInsts.length > 0) {
+          merged['_installments'] = freshInsts;
+        } else {
+          delete merged['_installments'];
         }
 
         if (recordId.startsWith('temp_')) {
@@ -457,9 +499,17 @@ export function CollectionViewClient({
         if (e.key === 'Enter') {
           e.preventDefault();
           setEditingCell(null);
-          setTimeout(() => {
-            handleSaveBulk();
-          }, 50);
+          if (rowIndex < combinedRows.length - 1) {
+            setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: field._id });
+          }
+        } else if (e.key === 'Tab') {
+          e.preventDefault();
+          setEditingCell(null);
+          if (colIndex < fields.length - 1) {
+            setFocusedCell({ recordId, fieldId: fields[colIndex + 1]._id });
+          } else if (rowIndex < combinedRows.length - 1) {
+            setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: fields[0]._id });
+          }
         } else if (e.key === 'Escape') {
           e.preventDefault();
           setEditingCell(null);
@@ -475,7 +525,9 @@ export function CollectionViewClient({
               if (e.key === 'Enter') {
                 e.preventDefault();
                 setEditingCell(null);
-                setTimeout(() => handleSaveBulk(), 50);
+                if (rowIndex < combinedRows.length - 1) {
+                  setFocusedCell({ recordId: combinedRows[rowIndex + 1]._id, fieldId: field._id });
+                }
               }
             }}
             onBlur={() => setEditingCell(null)}
@@ -487,12 +539,12 @@ export function CollectionViewClient({
       if (field.type === 'number') {
         return (
           <Input
-            type="number"
-            value={currentVal ?? ''}
-            onChange={(e) => handleDraftChange(recordId, field.name, e.target.value !== '' ? Number(e.target.value) : '')}
+            type="text"
+            value={currentVal !== undefined && currentVal !== null ? String(currentVal) : ''}
+            onChange={(e) => handleDraftChange(recordId, field.name, e.target.value)}
             onKeyDown={handleInputKeyDown}
             onBlur={() => setEditingCell(null)}
-            className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0"
+            className="h-8 py-0.5 px-1.5 w-full text-sm bg-background border-primary focus-visible:ring-1 focus-visible:ring-offset-0 font-mono"
             autoFocus
           />
         );
@@ -543,6 +595,19 @@ export function CollectionViewClient({
       </div>
     );
   };
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        if (isEditMode) {
+          e.preventDefault();
+          handleSaveBulk();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isEditMode, draftRecords, records, fields]);
 
   useEffect(() => {
     if (fieldDialogOpen) {

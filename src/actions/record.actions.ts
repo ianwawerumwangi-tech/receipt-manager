@@ -75,7 +75,6 @@ async function validateAndFormatReceiptNumber(
     return {};
   }
 
-  // Validate each part of the slash-separated receipt numbers
   const parts = val.split('/').map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0) {
     return {
@@ -83,7 +82,30 @@ async function validateAndFormatReceiptNumber(
     };
   }
 
+  const EXEMPT_CODES = ['DIRECT', 'CASH', 'BANK', 'MANUAL', 'N/A', 'NA', 'CHEQUE', 'CHECK', 'NONE'];
+
+  // Check if existing record already has this value to avoid blocking edits to other fields
+  let existingValParts: string[] = [];
+  if (recordId) {
+    const existingDoc = await Record.findById(recordId).lean();
+    if (existingDoc) {
+      const existingData = existingDoc.data instanceof Map
+        ? Object.fromEntries(existingDoc.data)
+        : (existingDoc.data as Record<string, any>);
+      const existingVal = String(existingData[fieldName] || '').toUpperCase();
+      existingValParts = existingVal.split('/').map((p) => p.trim());
+    }
+  }
+
   for (const part of parts) {
+    if (EXEMPT_CODES.includes(part.toUpperCase())) {
+      continue;
+    }
+
+    if (existingValParts.includes(part)) {
+      continue;
+    }
+
     if (part.length !== 10 || !/^[A-Z0-9]+$/.test(part)) {
       return {
         error: `Each transaction ID "${part}" in the receipt must be exactly 10 uppercase alphanumeric characters.`,
@@ -175,6 +197,18 @@ export async function updateRecord(id: string, collectionId: string, fieldData: 
     return { error: valRes.error };
   }
 
+  const fields = await Field.find({ collectionId }).lean();
+  const amountField = findFieldByPriority(fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']);
+  const rctField = findFieldByPriority(fields, ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT']);
+  if (amountField || rctField) {
+    const freshInstallments = extractRecordInstallments(fieldData, fields);
+    if (freshInstallments.length > 0) {
+      fieldData['_installments'] = freshInstallments;
+    } else {
+      delete fieldData['_installments'];
+    }
+  }
+
   await Record.findByIdAndUpdate(id, { data: fieldData });
   revalidatePath(`/collections/${collectionId}`);
   revalidatePath('/');
@@ -218,11 +252,24 @@ export async function updateRecordsBulk(
 
   await dbConnect();
 
-  // Validate all drafts before committing
+  const fields = await Field.find({ collectionId }).lean();
+
+  // Validate all drafts before committing and sync installments
   for (const update of updates) {
     const valRes = await validateAndFormatReceiptNumber(collectionId, update.id, update.data);
     if (valRes.error) {
       return { error: valRes.error };
+    }
+
+    const amountField = findFieldByPriority(fields, ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID']);
+    const rctField = findFieldByPriority(fields, ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT']);
+    if (amountField || rctField) {
+      const freshInstallments = extractRecordInstallments(update.data, fields);
+      if (freshInstallments.length > 0) {
+        update.data['_installments'] = freshInstallments;
+      } else {
+        delete update.data['_installments'];
+      }
     }
   }
 
@@ -245,7 +292,9 @@ export async function updateRecordsBulk(
 async function buildRecordSmsPayload(
   recordDataObj: Record<string, any>,
   fields: any[],
-  collectionName?: string
+  collectionName?: string,
+  collectionId?: string,
+  cachedRate?: number
 ) {
   // Name
   const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
@@ -298,40 +347,85 @@ async function buildRecordSmsPayload(
   }
 
   if (isWaterBill) {
-    // Previous Amount
-    const prevField = fields.find(f => ['PREVIOUS', 'PREV', 'PREVIOUS READING', 'PREV READING', 'PREV READ'].includes(f.name.toUpperCase()));
+    // Previous Amount / Reading
+    const prevField = findFieldByPriority(fields, ['PREVIOUS', 'PREV', 'PREVIOUS READING', 'PREV READING', 'PREV READ']);
     const prevVal = prevField ? parseMathExpression(recordDataObj[prevField.name]) : 0;
 
-    // Current Amount
-    const currField = fields.find(f => ['CURRENT', 'CURR', 'CURRENT READING', 'CURR READING', 'CURR READ'].includes(f.name.toUpperCase()));
+    // Current Amount / Reading
+    const currField = findFieldByPriority(fields, ['CURRENT', 'CURR', 'CURRENT READING', 'CURR READING', 'CURR READ']);
     const currVal = currField ? parseMathExpression(recordDataObj[currField.name]) : 0;
 
-    // Total Amount
+    // Consumption / Units
+    const consumptionField = findFieldByPriority(fields, ['CONSUMPTION', 'UNITS', 'UNITS USED']);
+    const recordedConsumption = consumptionField ? parseMathExpression(recordDataObj[consumptionField.name]) : null;
+    const consumption = (recordedConsumption !== null && recordedConsumption > 0)
+      ? recordedConsumption
+      : Math.max(0, currVal - prevVal);
+
     const totalFieldCandidates = ['TOTAL BILL', 'WATER BILL', 'TOTAL', 'TOTAL AMOUNT', 'AMOUNT DUE', 'AMOUNT'];
-    let totalField = null;
-    for (const cand of totalFieldCandidates) {
-      totalField = fields.find(f => f.name.toUpperCase() === cand);
-      if (totalField) break;
-    }
-    const totalVal = totalField ? parseMathExpression(recordDataObj[totalField.name]) : 0;
+    const totalField = findFieldByPriority(fields, totalFieldCandidates);
+    const recordedTotal = totalField ? parseMathExpression(recordDataObj[totalField.name]) : 0;
 
-    // Amount per unit
-    const rateFieldCandidates = ['PER UNIT', 'RATE', 'UNIT RATE', 'AMOUNT PER UNIT', 'PRICE PER UNIT'];
-    let rateField = null;
-    for (const cand of rateFieldCandidates) {
-      rateField = fields.find(f => f.name.toUpperCase() === cand);
-      if (rateField) break;
+    // Dynamic rate per unit from document formulae, fields, this record, or sibling records
+    let rateVal = 0;
+
+    // 1. Explicit rate field in schema (e.g. 'PER UNIT', 'RATE', 'UNIT RATE')
+    const rateField = findFieldByPriority(fields, ['PER UNIT', 'RATE', 'UNIT RATE', 'AMOUNT PER UNIT', 'PRICE PER UNIT']);
+    if (rateField && parseMathExpression(recordDataObj[rateField.name]) > 0) {
+      rateVal = parseMathExpression(recordDataObj[rateField.name]);
     }
 
-    let rateVal = rateField ? parseMathExpression(recordDataObj[rateField.name]) : 0;
-    if (!rateVal) {
-      const consumptionField = fields.find(f => ['CONSUMPTION', 'UNITS', 'UNITS USED'].includes(f.name.toUpperCase()));
-      const consumption = consumptionField ? parseMathExpression(recordDataObj[consumptionField.name]) : (currVal - prevVal);
-      if (consumption > 0 && totalVal > 0) {
-        rateVal = Math.round(totalVal / consumption);
-      } else {
-        rateVal = 150; // default rate per unit if non-calculable
+    // 2. Cached unit rate stored during Excel import on this record
+    if (!rateVal && typeof recordDataObj._unitRate === 'number' && recordDataObj._unitRate > 0) {
+      rateVal = recordDataObj._unitRate;
+    }
+
+    // 3. From cachedRate passed from collection context
+    if (!rateVal && typeof cachedRate === 'number' && cachedRate > 0) {
+      rateVal = cachedRate;
+    }
+
+    // 4. Calculate from this record if it has usage and recorded total/bill
+    if (!rateVal && consumption > 0 && recordedTotal > 0) {
+      rateVal = Math.round(recordedTotal / consumption);
+    }
+
+    // 5. Look up sibling records in the same collection if collectionId is available
+    if (!rateVal && collectionId) {
+      const siblingRecords = await Record.find({ collectionId }).limit(30).lean();
+      for (const sib of siblingRecords) {
+        const sibData = sib.data instanceof Map ? Object.fromEntries(sib.data) : (sib.data as Record<string, any>);
+        if (typeof sibData._unitRate === 'number' && sibData._unitRate > 0) {
+          rateVal = sibData._unitRate;
+          break;
+        }
+        const sibPrev = prevField ? parseMathExpression(sibData[prevField.name]) : 0;
+        const sibCurr = currField ? parseMathExpression(sibData[currField.name]) : 0;
+        const sibCons = consumptionField ? parseMathExpression(sibData[consumptionField.name]) : Math.max(0, sibCurr - sibPrev);
+        const sibTot = totalField ? parseMathExpression(sibData[totalField.name]) : 0;
+        if (sibCons > 0 && sibTot > 0) {
+          rateVal = Math.round(sibTot / sibCons);
+          if (rateVal > 0) break;
+        }
       }
+    }
+
+    // 6. Default fallback
+    if (!rateVal || rateVal <= 0) {
+      rateVal = 150;
+    }
+
+    // When previous and current readings are the same (or current <= previous),
+    // there was no water usage, so total must strictly be 0 (no charge).
+    let totalVal = 0;
+    const isZeroUsage = (prevField && currField)
+      ? currVal <= prevVal
+      : (recordedConsumption !== null ? recordedConsumption <= 0 : false);
+
+    if (isZeroUsage) {
+      totalVal = 0;
+    } else {
+      totalVal = recordedTotal > 0 ? recordedTotal : consumption * rateVal;
     }
 
     const message = buildWaterBillSmsTemplate({
@@ -447,7 +541,7 @@ export async function sendRecordSmsAction(
   }
 
   const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
-  const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name);
+  const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId);
 
   if (!payload.phoneFieldFound) {
     return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
@@ -495,6 +589,44 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
     statusFieldName = smsStatusField.name;
   }
 
+  // Pre-resolve water unit rate for water bill collections to optimize bulk SMS sending
+  let cachedRate: number | undefined;
+  const isWaterBill = fields.some(f => 
+    ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
+  ) || (collection?.name && collection.name.toUpperCase().includes('WATER'));
+
+  if (isWaterBill) {
+    const sampleRecord = await Record.findOne({
+      collectionId,
+      $or: [
+        { 'data._unitRate': { $exists: true, $gt: 0 } },
+        { 'data.WATER BILL': { $gt: 0 } },
+        { 'data.TOTAL BILL': { $gt: 0 } },
+      ],
+    }).lean();
+
+    if (sampleRecord) {
+      const sData = sampleRecord.data instanceof Map
+        ? Object.fromEntries(sampleRecord.data)
+        : (sampleRecord.data as Record<string, any>);
+      if (typeof sData._unitRate === 'number' && sData._unitRate > 0) {
+        cachedRate = sData._unitRate;
+      } else {
+        const prevF = findFieldByPriority(fields, ['PREVIOUS', 'PREV', 'PREVIOUS READING', 'PREV READING']);
+        const currF = findFieldByPriority(fields, ['CURRENT', 'CURR', 'CURRENT READING', 'CURR READING']);
+        const consF = findFieldByPriority(fields, ['CONSUMPTION', 'UNITS', 'UNITS USED']);
+        const totF = findFieldByPriority(fields, ['TOTAL BILL', 'WATER BILL', 'TOTAL']);
+        const p = prevF ? parseMathExpression(sData[prevF.name]) : 0;
+        const c = currF ? parseMathExpression(sData[currF.name]) : 0;
+        const cons = consF ? parseMathExpression(sData[consF.name]) : Math.max(0, c - p);
+        const tot = totF ? parseMathExpression(sData[totF.name]) : 0;
+        if (cons > 0 && tot > 0) {
+          cachedRate = Math.round(tot / cons);
+        }
+      }
+    }
+  }
+
   const records = await Record.find({ _id: { $in: recordIds } });
   let successCount = 0;
   let failCount = 0;
@@ -511,7 +643,7 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
             ? Object.fromEntries(record.data)
             : (record.data as Record<string, any>);
 
-        const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name);
+        const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId, cachedRate);
 
         if (!payload.phone) {
           record.data.set(statusFieldName, 'failed');

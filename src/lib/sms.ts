@@ -7,17 +7,17 @@ interface SmsResult {
 export function formatPhoneNumber(phone: string): string {
   // Remove all non-numeric characters
   let cleaned = phone.replace(/\D/g, '');
-  
+
   // If it starts with '0' and is 10 digits long, change '0' to '254'
   if (cleaned.startsWith('0') && cleaned.length === 10) {
     cleaned = '254' + cleaned.substring(1);
   }
-  
+
   // If it starts with '7' or '1' and is 9 digits long (local format without leading 0)
   if ((cleaned.startsWith('7') || cleaned.startsWith('1')) && cleaned.length === 9) {
     cleaned = '254' + cleaned;
   }
-  
+
   return cleaned;
 }
 
