@@ -9,6 +9,7 @@ import { getSession } from '@/lib/auth';
 import { serialize, extractRecordInstallments } from '@/lib/utils';
 import { sendSms, buildSmsTemplate, buildWaterBillSmsTemplate } from '@/lib/sms';
 import { lookupTenantPhone } from '@/actions/customer.actions';
+import { logAppEvent, formatSmsFriendlyMessage } from '@/lib/logger';
 
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
@@ -541,14 +542,50 @@ export async function sendRecordSmsAction(
   }
 
   const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+  const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER']);
+  const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
+
   const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId);
 
   if (!payload.phoneFieldFound) {
+    await logAppEvent({
+      level: 'error',
+      category: 'sms',
+      action: 'Send SMS',
+      message: `Phone number field not found in collection schema for record ${houseNo ? `house #${houseNo}` : ''} (${payload.name}).`,
+      houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId,
+      recordId,
+      status: 'failed',
+      error: 'Phone field not found in schema',
+    });
     return { error: 'Phone number field (e.g. "PHONE NO") not found in collection schema.' };
   }
 
   if (!payload.phone) {
-    return { error: 'Phone number is empty for this record.' };
+    const formatted = formatSmsFriendlyMessage('Empty phone number', {
+      phone: '',
+      name: payload.name,
+      houseNo,
+    });
+    await logAppEvent({
+      level: 'error',
+      category: 'sms',
+      action: 'Send SMS',
+      message: formatted.message,
+      phone: '',
+      houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId,
+      recordId,
+      status: 'failed',
+      error: 'Phone number is empty',
+      details: { isInvalidPhone: true },
+    });
+    return { error: formatted.message };
   }
 
   const result = await sendSms(payload.phone, payload.message);
@@ -557,11 +594,60 @@ export async function sendRecordSmsAction(
   record.markModified('data');
   await record.save();
 
+  if (result.success) {
+    await logAppEvent({
+      level: 'success',
+      category: 'sms',
+      action: 'Send SMS',
+      message: `SMS sent successfully to ${payload.phone} for house #${houseNo || 'N/A'} (${payload.name}).`,
+      phone: payload.phone,
+      houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId,
+      recordId,
+      status: 'success',
+      details: { messageId: result.messageId, message: payload.message },
+    });
+  } else {
+    const formatted = formatSmsFriendlyMessage(result.error, {
+      phone: payload.phone,
+      name: payload.name,
+      houseNo,
+    });
+    await logAppEvent({
+      level: 'error',
+      category: 'sms',
+      action: 'Send SMS',
+      message: formatted.message,
+      phone: payload.phone,
+      houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId,
+      recordId,
+      status: 'failed',
+      error: result.error,
+      details: {
+        rawError: result.error,
+        isInsufficientCredits: formatted.isInsufficientCredits,
+        isInvalidPhone: formatted.isInvalidPhone,
+        message: payload.message,
+      },
+    });
+  }
+
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/logs');
   revalidatePath('/');
 
   if (!result.success) {
-    return { error: result.error || 'Failed to send SMS' };
+    const formatted = formatSmsFriendlyMessage(result.error, {
+      phone: payload.phone,
+      name: payload.name,
+      houseNo,
+    });
+    return { error: formatted.message };
   }
 
   return { success: true, count: 1 };
@@ -643,6 +729,9 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
             ? Object.fromEntries(record.data)
             : (record.data as Record<string, any>);
 
+        const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER']);
+        const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
+
         const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId, cachedRate);
 
         if (!payload.phone) {
@@ -650,7 +739,27 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
           record.markModified('data');
           await record.save();
           failCount++;
-          errors.push(`${payload.name}: Phone number is empty.`);
+          const formatted = formatSmsFriendlyMessage('Empty phone number', {
+            phone: '',
+            name: payload.name,
+            houseNo,
+          });
+          errors.push(formatted.message);
+          await logAppEvent({
+            level: 'error',
+            category: 'sms',
+            action: 'Bulk SMS Send',
+            message: formatted.message,
+            phone: '',
+            houseNo,
+            customerName: payload.name,
+            collectionName: collection?.name,
+            collectionId,
+            recordId: record._id.toString(),
+            status: 'failed',
+            error: 'Phone number is empty',
+            details: { isInvalidPhone: true },
+          });
           return;
         }
 
@@ -658,9 +767,48 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
 
         if (result.success) {
           successCount++;
+          await logAppEvent({
+            level: 'success',
+            category: 'sms',
+            action: 'Bulk SMS Send',
+            message: `SMS delivered successfully to ${payload.phone} for house #${houseNo || 'N/A'} (${payload.name}).`,
+            phone: payload.phone,
+            houseNo,
+            customerName: payload.name,
+            collectionName: collection?.name,
+            collectionId,
+            recordId: record._id.toString(),
+            status: 'success',
+            details: { messageId: result.messageId, message: payload.message },
+          });
         } else {
           failCount++;
-          errors.push(`${payload.name} (${payload.phone}): ${result.error || 'Unknown error'}`);
+          const formatted = formatSmsFriendlyMessage(result.error, {
+            phone: payload.phone,
+            name: payload.name,
+            houseNo,
+          });
+          errors.push(formatted.message);
+          await logAppEvent({
+            level: 'error',
+            category: 'sms',
+            action: 'Bulk SMS Send',
+            message: formatted.message,
+            phone: payload.phone,
+            houseNo,
+            customerName: payload.name,
+            collectionName: collection?.name,
+            collectionId,
+            recordId: record._id.toString(),
+            status: 'failed',
+            error: result.error,
+            details: {
+              rawError: result.error,
+              isInsufficientCredits: formatted.isInsufficientCredits,
+              isInvalidPhone: formatted.isInvalidPhone,
+              message: payload.message,
+            },
+          });
         }
 
         record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
@@ -670,7 +818,25 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
     );
   }
 
+  // Summary log entry for bulk send
+  await logAppEvent({
+    level: failCount === 0 ? 'success' : (successCount > 0 ? 'warn' : 'error'),
+    category: 'sms',
+    action: 'Bulk SMS Summary',
+    message: `Bulk SMS run completed for "${collection?.name || 'Collection'}": ${successCount} delivered, ${failCount} failed.`,
+    collectionName: collection?.name,
+    collectionId,
+    status: failCount === 0 ? 'success' : 'failed',
+    details: {
+      totalAttempted: records.length,
+      successCount,
+      failCount,
+      sampleErrors: errors.slice(0, 5),
+    },
+  });
+
   revalidatePath(`/collections/${collectionId}`);
+  revalidatePath('/logs');
   revalidatePath('/');
   return {
     success: failCount === 0,

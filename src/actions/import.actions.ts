@@ -9,6 +9,7 @@ import { Record as RecordModel } from '@/models/Record';
 import { getSession } from '@/lib/auth';
 import { findLatestMonthSheet } from '@/lib/utils';
 import { bulkLookupTenantPhones } from '@/actions/customer.actions';
+import { logAppEvent } from '@/lib/logger';
 
 // Evaluates formulas dynamically
 function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: ExcelJS.Workbook): any {
@@ -595,10 +596,30 @@ export async function importSpreadsheet(data: {
       importCount = recordsToInsert.length;
     }
 
+    await logAppEvent({
+      level: 'info',
+      category: 'import',
+      action: 'Spreadsheet Import',
+      message: `Imported ${importCount} records into collection.`,
+      collectionId: data.collectionId,
+      status: 'success',
+      details: { recordCount: importCount, sheetName: data.sheetName },
+    });
+
     revalidatePath(`/collections/${data.collectionId}`);
+    revalidatePath('/logs');
     revalidatePath('/');
     return { success: true, count: importCount };
   } catch (error: any) {
+    await logAppEvent({
+      level: 'error',
+      category: 'import',
+      action: 'Spreadsheet Import',
+      message: `Spreadsheet import failed: ${error.message || 'Unknown error'}`,
+      collectionId: data.collectionId,
+      status: 'failed',
+      error: error.message,
+    });
     return { error: error.message || 'Failed to import data' };
   }
 }
@@ -684,10 +705,29 @@ export async function importNewCollection(data: {
       totalImported += res.count;
     }
 
+    await logAppEvent({
+      level: 'success',
+      category: 'import',
+      action: 'Create & Import Collection',
+      message: `Created and imported collection "${data.name}" (${totalImported} total records across ${sheetNames.length} sheet${sheetNames.length > 1 ? 's' : ''}).`,
+      collectionId: lastCollectionId,
+      status: 'success',
+      details: { totalImported, sheets: sheetNames },
+    });
+
     revalidatePath('/collections');
+    revalidatePath('/logs');
     revalidatePath('/');
     return { success: true, collectionId: lastCollectionId, count: totalImported };
   } catch (error: any) {
+    await logAppEvent({
+      level: 'error',
+      category: 'import',
+      action: 'Create & Import Collection',
+      message: `Failed to create and import collection "${data.name}": ${error.message || 'Unknown error'}`,
+      status: 'failed',
+      error: error.message,
+    });
     return { error: error.message || 'Failed to create and import collection' };
   }
 }

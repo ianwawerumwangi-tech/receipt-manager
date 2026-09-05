@@ -7,6 +7,7 @@ import '@/models/SmsLog';
 import '@/models/Collection';
 import '@/models/Field';
 import '@/models/Record';
+import '@/models/AppLog';
 
 interface MongooseCache {
   conn: typeof mongoose | null;

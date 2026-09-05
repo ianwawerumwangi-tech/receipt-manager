@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   Receipt,
+  ScrollText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { logout } from '@/actions/auth.actions';
@@ -19,6 +20,7 @@ import { logout } from '@/actions/auth.actions';
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/collections', label: 'Collections', icon: Layers },
+  { href: '/logs', label: 'Activity Logs', icon: ScrollText },
   { href: '/users', label: 'Users', icon: UserCog },
 ];
 
