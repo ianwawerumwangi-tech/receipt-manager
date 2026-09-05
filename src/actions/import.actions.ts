@@ -30,7 +30,50 @@ function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: E
   if ('formula' in val || 'sharedFormula' in val) {
     try {
       const fVal = val as any;
-      const formula = String(fVal.formula || fVal.sharedFormula || '').toUpperCase();
+      let formula = String(fVal.formula || '').toUpperCase();
+
+      if (!formula && fVal.sharedFormula) {
+        const masterCell = sheet.getCell(String(fVal.sharedFormula));
+        const masterVal = masterCell?.value as any;
+        if (masterVal && typeof masterVal === 'object' && masterVal.formula) {
+          const masterFormula = String(masterVal.formula).toUpperCase();
+          const rowOffset = Number(cell.row) - Number(masterCell.row);
+          const colOffset = Number(cell.col) - Number(masterCell.col);
+
+          formula = masterFormula.replace(
+            /([A-Z0-9_]+!)?(\$?)([A-Z]+)(\$?)([0-9]+)/g,
+            (_match, sheetPrefix, absCol, colLetters, absRow, rowNum) => {
+              let newCol = colLetters;
+              let newRow = rowNum;
+              if (!absCol && colOffset !== 0) {
+                let colIdx = 0;
+                for (let i = 0; i < colLetters.length; i++) {
+                  colIdx = colIdx * 26 + (colLetters.charCodeAt(i) - 64);
+                }
+                colIdx += colOffset;
+                if (colIdx > 0) {
+                  let temp = '';
+                  while (colIdx > 0) {
+                    const rem = (colIdx - 1) % 26;
+                    temp = String.fromCharCode(65 + rem) + temp;
+                    colIdx = Math.floor((colIdx - 1) / 26);
+                  }
+                  newCol = temp;
+                }
+              }
+              if (!absRow && rowOffset !== 0) {
+                newRow = String(parseInt(rowNum, 10) + rowOffset);
+              }
+              return (sheetPrefix || '') + (absCol || '') + newCol + (absRow || '') + newRow;
+            }
+          );
+        } else {
+          return evaluateCell(sheet, masterCell, workbook);
+        }
+      }
+
+      if (!formula) return null;
+
       const cellRegex = /([A-Z0-9_]+!)?[A-Z]+\d+/g;
       let evaluatedFormula = formula;
       const matches = Array.from(new Set(formula.match(cellRegex) || [])) as string[];

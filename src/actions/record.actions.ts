@@ -13,6 +13,10 @@ import { lookupTenantPhone } from '@/actions/customer.actions';
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
   if (typeof val === 'number') return val;
+  if (typeof val === 'object') {
+    if ('result' in val && typeof val.result === 'number') return val.result;
+    if ('result' in val && typeof val.result === 'string') return parseMathExpression(val.result);
+  }
   const str = String(val).trim();
   if (!str) return 0;
   if (/^\d+(\s*\+\s*\d+)*$/.test(str)) {
@@ -24,6 +28,14 @@ function parseMathExpression(val: any): number {
   }
   const parsed = Number(str);
   return isNaN(parsed) ? 0 : parsed;
+}
+
+function findFieldByPriority(fields: any[], candidates: string[]) {
+  for (const candidate of candidates) {
+    const found = fields.find((f) => f.name.trim().toUpperCase() === candidate.toUpperCase());
+    if (found) return found;
+  }
+  return null;
 }
 
 async function validateAndFormatReceiptNumber(
@@ -237,17 +249,17 @@ async function buildRecordSmsPayload(
 ) {
   // Name
   const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
-  const nameField = fields.find(f => nameFieldCandidates.includes(f.name.toUpperCase()));
+  const nameField = findFieldByPriority(fields, nameFieldCandidates);
   const name = String(recordDataObj[nameField?.name || ''] || 'Customer').trim();
 
   // Phone
   const phoneFieldCandidates = ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'];
-  const phoneField = fields.find(f => phoneFieldCandidates.includes(f.name.toUpperCase()));
+  const phoneField = findFieldByPriority(fields, phoneFieldCandidates);
   let phone = String(recordDataObj[phoneField?.name || ''] || '').trim();
 
   // Automatic lookup fallback if phone is empty
   if (!phone && name && name !== 'Customer') {
-    const houseField = fields.find(f => ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO'].includes(f.name.toUpperCase()));
+    const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO']);
     const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
     const lookedUpPhone = await lookupTenantPhone(name, houseNo);
     if (lookedUpPhone) {
@@ -261,8 +273,8 @@ async function buildRecordSmsPayload(
   ) || (collectionName && collectionName.toUpperCase().includes('WATER'));
 
   // Month
-  const monthFieldCandidates = ['MONTH OF RECEIPT', 'MONTH', 'FOR MONTH', 'FOR THE MONTH OF', 'PERIOD', 'RECEIPT MONTH', 'BILL MONTH'];
-  const monthField = fields.find(f => monthFieldCandidates.includes(f.name.toUpperCase()));
+  const monthFieldCandidates = ['MONTH OF RECEIPT', 'PERIOD', 'MONTH', 'FOR MONTH', 'FOR THE MONTH OF', 'RECEIPT MONTH', 'BILL MONTH'];
+  const monthField = findFieldByPriority(fields, monthFieldCandidates);
   let monthStr = String(recordDataObj[monthField?.name || ''] || '').trim();
 
   if (!monthStr && collectionName) {
@@ -341,7 +353,7 @@ async function buildRecordSmsPayload(
 
   // Payment receipt template
   const houseFieldCandidates = ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'HOUSE NUMBER', 'UNIT NO', 'UNIT', 'FLAT NO', 'ROOM NO', 'HSE/ROOM', 'HOUSE/ROOM'];
-  const houseField = fields.find(f => houseFieldCandidates.includes(f.name.toUpperCase()));
+  const houseField = findFieldByPriority(fields, houseFieldCandidates);
   const houseNumber = String(recordDataObj[houseField?.name || ''] || 'N/A').trim();
 
   const installments = extractRecordInstallments(recordDataObj, fields);
@@ -350,16 +362,41 @@ async function buildRecordSmsPayload(
     totalAmount = installments.reduce((sum, inst) => sum + (Number(inst.amount) || 0), 0);
   } else {
     const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID', 'PAID', 'TOTAL PAID', 'TOTAL AMOUNT'];
-    let amountField = null;
-    for (const candidate of amountFieldCandidates) {
-      amountField = fields.find(f => f.name.toUpperCase() === candidate);
-      if (amountField) break;
-    }
+    const amountField = findFieldByPriority(fields, amountFieldCandidates);
     totalAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
   }
 
-  const balanceFieldCandidates = ['BALANCE', 'BAL', 'OUTSTANDING', 'BAL B/F', 'BAL C/F', 'BAL B/D', 'BAL C/D', 'CURRENT BALANCE'];
-  const balanceField = fields.find(f => balanceFieldCandidates.includes(f.name.toUpperCase()));
+  // Actual Balance column lookup:
+  // Must prioritize actual balance columns (e.g. BALANCE, CURRENT BALANCE, CLOSING BALANCE)
+  // and NEVER use BAL B/D (Balance Brought Down) or BAL B/F (Balance Brought Forward), which are opening balances.
+  const balanceFieldCandidates = [
+    'BALANCE',
+    'CURRENT BALANCE',
+    'ACTUAL BALANCE',
+    'CLOSING BALANCE',
+    'NET BALANCE',
+    'TOTAL BALANCE',
+    'BAL',
+    'OUTSTANDING BALANCE',
+    'OUTSTANDING',
+    'BAL C/D',
+    'BAL C/F',
+  ];
+  let balanceField = findFieldByPriority(fields, balanceFieldCandidates);
+  if (!balanceField) {
+    // Fallback: look for a field containing BALANCE or ending with BAL,
+    // strictly avoiding any brought-forward balances (B/D, B/F, BROUGHT)
+    balanceField = fields.find((f) => {
+      const upper = f.name.trim().toUpperCase();
+      return (
+        (upper.includes('BALANCE') || upper.endsWith(' BAL')) &&
+        !upper.includes('B/D') &&
+        !upper.includes('B/F') &&
+        !upper.includes('BROUGHT')
+      );
+    });
+  }
+
   const balanceVal = balanceField ? recordDataObj[balanceField.name] : null;
   const rawBal = (balanceVal !== undefined && balanceVal !== null && balanceVal !== '') ? parseMathExpression(balanceVal) : null;
   const balance = rawBal !== null ? Math.max(0, rawBal) : 0;
