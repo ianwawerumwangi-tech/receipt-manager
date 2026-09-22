@@ -24,27 +24,27 @@ export function extractPlotNameFromCollection(name: string): string {
 export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
   {
     id: 'sidian-111999',
-    name: 'SIDIAN Bank (Paybill 111999)',
+    name: 'Sidian Bank Paybill 111999 (A/C 01001710003718)',
     category: 'Bank Paybill',
     paybillOrBank: 'Paybill 111999',
     accountDetails: 'A/C No. 01001710003718 (SIDIAN Bank)',
-    description: 'SIDIAN Bank Paybill 111999, A/C 01001710003718',
+    description: 'Paybill 111999, A/C 01001710003718',
     buildMessage: ({ month }) =>
       `Dear Esteemed Tenant, your ${month} rent is due. Please pay by today. Pay via Paybill 111999, A/C No. 01001710003718 (SIDIAN Bank). Cash payments to staff are not accepted. Ignore if you have already paid. Thank you.`,
   },
   {
-    id: 'lucy-equity-247247',
-    name: 'LUCY WANGARI / Equity Bank (Paybill 247247)',
+    id: 'equity-247247-063018',
+    name: 'Equity Bank Paybill 247247 (A/C 0630184433574)',
     category: 'Equity Paybill',
     paybillOrBank: 'Equity Paybill 247247',
-    accountDetails: 'A/C 0630184433574 (LUCY WANGARI)',
+    accountDetails: 'A/C 0630184433574',
     description: 'Equity Paybill 247247, A/C 0630184433574, Forward to Max 0713251597',
     buildMessage: ({ month }) =>
       `Dear Tenant, your ${month} rent is due. Please pay by today to avoid distress action. Pay via Equity Bank Paybill 247247, A/C 0630184433574 (LUCY WANGARI). Forward the payment SMS to Max\n0713251597. Cash payments to staff are not accepted. Ignore if you have already paid. Thank you.`,
   },
   {
     id: 'absa-303030',
-    name: 'ABSA Bank (Paybill 303030)',
+    name: 'ABSA Bank Paybill 303030 (A/C 2049844029)',
     category: 'Bank Paybill',
     paybillOrBank: 'Paybill 303030',
     accountDetails: 'A/C No. 2049844029 (ABSA Bank)',
@@ -53,28 +53,28 @@ export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
       `Dear Esteemed Tenant, your ${month} rent is due. Please pay by today to avoid distress action. Pay via Paybill 303030, A/C No. 2049844029 (ABSA Bank). Forward the payment SMS to David 0746112221 Cash to staff is not accepted or acknowledged. Ignore if you have already paid. Thank you`,
   },
   {
-    id: 'esther-mpesa',
-    name: 'ESTHER KARIUKI (M-Pesa 0721 813 403)',
+    id: 'mpesa-direct-0721813',
+    name: 'M-Pesa Direct Payment (0721 813 403)',
     category: 'M-Pesa Direct',
     paybillOrBank: 'M-Pesa 0721 813 403',
-    accountDetails: 'ESTHER KARIUKI',
-    description: 'M-Pesa 0721 813 403 (ESTHER KARIUKI), Forward to Yegon 0736 721 662',
+    accountDetails: 'Phone 0721 813 403',
+    description: 'M-Pesa 0721 813 403, Forward SMS to Yegon 0736 721 662',
     buildMessage: ({ month }) =>
       `Dear Esteemed Tenant, your ${month} rent is due. Please pay by today to avoid distress action. Pay via M-Pesa 0721 813 403 (ESTHER KARIUKI). Forward the payment SMS to Yegon 0736 721 662. Cash to staff is not accepted or acknowledged. Ignore if you have already paid. Thank you.`,
   },
   {
-    id: 'sarah-equity-247247',
-    name: 'Sarah Njoki / Equity Bank (Paybill 247247)',
+    id: 'equity-247247-057017',
+    name: 'Equity Bank Paybill 247247 (A/C 0570177473159)',
     category: 'Equity Paybill',
     paybillOrBank: 'Equity Paybill 247247',
-    accountDetails: 'A/C No. 0570177473159 (Sarah Njoki)',
+    accountDetails: 'A/C No. 0570177473159',
     description: 'Equity Paybill 247247, A/C 0570177473159, Forward to David 0746112221',
     buildMessage: ({ month }) =>
       `Dear Esteemed Tenant, your ${month} rent is due. Please pay by today to avoid distress action. Pay via Equity Bank Paybill 247247, A/C No. 0570177473159, A/C Name: Sarah Njoki. Forward the payment SMS to David\n0746112221. Cash to staff is not accepted or acknowledged. Ignore if you have already paid. Thank you.`,
   },
   {
-    id: 'joseph-ncba-880100',
-    name: 'Joseph Mwangi Githinji (Paybill 880100 / NCBA)',
+    id: 'mpesa-880100-ncba',
+    name: 'M-Pesa Paybill 880100 & NCBA Bank (A/C 711933#Plot/Hse & NCBA 1000559072)',
     category: 'Multi-Option',
     paybillOrBank: 'Paybill 880100 & NCBA Bank',
     accountDetails: 'Paybill 880100 A/C 711933#Plot/Hse & NCBA 1000559072',
@@ -92,11 +92,11 @@ export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
     },
   },
   {
-    id: 'anne-equity-247247',
-    name: 'ANNE WAMBUI / Equity Bank (Paybill 247247)',
+    id: 'equity-247247-072130',
+    name: 'Equity Bank Paybill 247247 (A/C 072130#Hse No.)',
     category: 'Equity Paybill',
     paybillOrBank: 'Equity Paybill 247247',
-    accountDetails: 'A/C No. 072130#Hse No. (ANNE WAMBUI)',
+    accountDetails: 'A/C No. 072130#Hse No.',
     description: 'Equity Paybill 247247, A/C 072130#Hse No., Forward to David 0746112221',
     buildMessage: ({ month, houseNo }) => {
       const hseText = houseNo ? houseNo : 'Hse No.';
@@ -105,7 +105,7 @@ export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
   },
   {
     id: 'caritas-899790',
-    name: 'Caritas Bank (Paybill 899790)',
+    name: 'Caritas Bank Paybill 899790 (A/C 1004007002127)',
     category: 'Bank Paybill',
     paybillOrBank: 'Paybill 899790',
     accountDetails: 'A/C No. 1004007002127 (Caritas Bank)',
@@ -114,11 +114,11 @@ export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
       `Dear Esteemed Tenant, your ${month} rent is due. Please pay by today to avoid distress action. Pay via Paybill 899790, A/C No. 1004007002127 (Caritas Bank). Forward the payment SMS to David 0721 813 403. Cash to staff is not accepted or acknowledged. Ignore if you have already paid. Thank you.`,
   },
   {
-    id: 'lobby-4026352',
-    name: 'LOBBY ENTERPRISES LTD (Paybill 4026352)',
+    id: 'paybill-4026352',
+    name: 'Paybill 4026352 (A/C Plot Name & House No.)',
     category: 'Company Paybill',
     paybillOrBank: 'Paybill 4026352',
-    accountDetails: 'A/C: Plot Name & House No. (LOBBY ENTERPRISES LTD)',
+    accountDetails: 'Paybill 4026352 - A/C: Plot Name & House No.',
     description: 'Paybill 4026352, A/C: Plot Name & House No., Name: LOBBY ENTERPRISES LTD',
     buildMessage: ({ month, houseNo, plotName }) => {
       let plotAndHse = 'Plot Name & House No.';
@@ -134,6 +134,17 @@ export const INVOICE_TEMPLATES: InvoiceTemplate[] = [
   },
 ];
 
+const TEMPLATE_ID_ALIASES: Record<string, string> = {
+  'lucy-equity-247247': 'equity-247247-063018',
+  'esther-mpesa': 'mpesa-direct-0721813',
+  'sarah-equity-247247': 'equity-247247-057017',
+  'joseph-ncba-880100': 'mpesa-880100-ncba',
+  'anne-equity-247247': 'equity-247247-072130',
+  'lobby-4026352': 'paybill-4026352',
+};
+
 export function getInvoiceTemplate(id?: string): InvoiceTemplate {
-  return INVOICE_TEMPLATES.find((t) => t.id === id) || INVOICE_TEMPLATES[0];
+  if (!id) return INVOICE_TEMPLATES[0];
+  const resolvedId = TEMPLATE_ID_ALIASES[id] || id;
+  return INVOICE_TEMPLATES.find((t) => t.id === resolvedId) || INVOICE_TEMPLATES[0];
 }
