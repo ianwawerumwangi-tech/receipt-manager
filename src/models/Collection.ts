@@ -4,6 +4,8 @@ export interface ICollectionDocument extends Document {
   name: string;
   description?: string;
   createdBy: mongoose.Types.ObjectId;
+  defaultInvoiceTemplateId?: string;
+  plotName?: string;
   createdAt: Date;
 }
 
@@ -12,6 +14,8 @@ const CollectionSchema = new Schema<ICollectionDocument>(
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    defaultInvoiceTemplateId: { type: String, trim: true },
+    plotName: { type: String, trim: true },
   },
   { timestamps: true }
 );

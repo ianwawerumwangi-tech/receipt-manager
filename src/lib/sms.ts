@@ -139,6 +139,182 @@ export async function sendSms(phone: string, message: string): Promise<SmsResult
   };
 }
 
+export interface BatchSmsItem {
+  correlator: string;
+  phone: string;
+  message: string;
+}
+
+export interface BatchSmsResult {
+  correlator: string;
+  phone: string;
+  success: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+async function fallbackIndividualSends(
+  toSend: { item: BatchSmsItem; formattedPhones: string[] }[],
+  existingResults: BatchSmsResult[]
+): Promise<BatchSmsResult[]> {
+  const settled = await Promise.allSettled(
+    toSend.map(async ({ item }) => {
+      const res = await sendSms(item.phone, item.message);
+      return {
+        correlator: item.correlator,
+        phone: item.phone,
+        success: res.success,
+        messageId: res.messageId,
+        error: res.error,
+      };
+    })
+  );
+
+  for (const s of settled) {
+    if (s.status === 'fulfilled') {
+      existingResults.push(s.value);
+    } else {
+      existingResults.push({
+        correlator: 'unknown',
+        phone: '',
+        success: false,
+        error: s.reason?.message || 'Send failed',
+      });
+    }
+  }
+
+  return existingResults;
+}
+
+export async function sendBatchSms(
+  items: BatchSmsItem[],
+  retries = 2
+): Promise<BatchSmsResult[]> {
+  if (!items || items.length === 0) return [];
+
+  const results: BatchSmsResult[] = [];
+  const toSend: { item: BatchSmsItem; formattedPhones: string[] }[] = [];
+
+  for (const item of items) {
+    const numbers = String(item.phone || '').split(/[\/\,\;]/).map((p) => p.trim()).filter(Boolean);
+    if (numbers.length === 0) {
+      results.push({
+        correlator: item.correlator,
+        phone: item.phone,
+        success: false,
+        error: 'Phone number is empty.',
+      });
+      continue;
+    }
+
+    const formatted = numbers.map(formatPhoneNumber).filter(Boolean);
+    if (formatted.length === 0) {
+      results.push({
+        correlator: item.correlator,
+        phone: item.phone,
+        success: false,
+        error: `Invalid phone number "${item.phone}": contains no digits.`,
+      });
+      continue;
+    }
+
+    toSend.push({ item, formattedPhones: formatted });
+  }
+
+  if (toSend.length === 0) {
+    return results;
+  }
+
+  let apiUrl = process.env.BONGATECH_API_URL || 'https://bulk.bongatech.co.ke/api/v1/send-sms';
+  if (apiUrl.includes('api.bongatech.co.ke/sms/v1/send') || apiUrl.includes('api.bongatech.co.ke')) {
+    apiUrl = 'https://bulk.bongatech.co.ke/api/v1/send-sms';
+  }
+  const apiKey =
+    process.env.BONGATECH_API_KEY ||
+    process.env.BONGATECH_API_TOKEN ||
+    process.env.BONGATECH_TOKEN ||
+    process.env.VERCEL_BONGATECH_API_KEY ||
+    process.env.VERCEL_BONGATECH_TOKEN;
+  const senderId =
+    process.env.BONGATECH_SENDER_ID ||
+    process.env.BONGATECH_SENDERID ||
+    process.env.VERCEL_BONGATECH_SENDER_ID;
+
+  if (!apiKey || !senderId) {
+    for (const { item } of toSend) {
+      results.push({
+        correlator: item.correlator,
+        phone: item.phone,
+        success: false,
+        error: 'BongaTech credentials not configured in environment.',
+      });
+    }
+    return results;
+  }
+
+  const batchPayload: any[] = [];
+  for (const { item, formattedPhones } of toSend) {
+    for (let i = 0; i < formattedPhones.length; i++) {
+      batchPayload.push({
+        sender: senderId,
+        message: item.message,
+        phone: formattedPhones[i],
+        correlator: item.correlator,
+      });
+    }
+  }
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(batchPayload),
+      signal: AbortSignal.timeout(9000),
+    });
+
+    if (response.status === 429 && retries > 0) {
+      console.warn(`[BongaTech Batch Rate Limit] 429 received. Backing off for 1200ms...`);
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      return sendBatchSms(items, retries - 1);
+    }
+
+    const responseText = await response.text();
+    let data: any = {};
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      return fallbackIndividualSends(toSend, results);
+    }
+
+    if (
+      response.ok &&
+      (data.status === true ||
+        String(data.message || '').toLowerCase().includes('queued') ||
+        data.messageId ||
+        data.id)
+    ) {
+      for (const { item } of toSend) {
+        results.push({
+          correlator: item.correlator,
+          phone: item.phone,
+          success: true,
+          messageId: data.messageId || (typeof data.data === 'object' && data.data?.uniqueId) || 'batch_queued',
+        });
+      }
+      return results;
+    }
+
+    return fallbackIndividualSends(toSend, results);
+  } catch (err: any) {
+    console.warn('[BongaTech Batch Request Exception] Falling back to individual sends:', err?.message);
+    return fallbackIndividualSends(toSend, results);
+  }
+}
+
 export function buildSmsTemplate(params: {
   customerName: string;
   totalAmount: number | string;

@@ -5,11 +5,17 @@ import { dbConnect } from '@/lib/mongodb';
 import { Collection } from '@/models/Collection';
 import { Record } from '@/models/Record';
 import { Field } from '@/models/Field';
+import { AppLog } from '@/models/AppLog';
 import { getSession } from '@/lib/auth';
 import { serialize, extractRecordInstallments } from '@/lib/utils';
-import { sendSms, buildSmsTemplate, buildWaterBillSmsTemplate } from '@/lib/sms';
+import { sendSms, sendBatchSms, buildSmsTemplate, buildWaterBillSmsTemplate } from '@/lib/sms';
 import { lookupTenantPhone } from '@/actions/customer.actions';
 import { logAppEvent, formatSmsFriendlyMessage } from '@/lib/logger';
+import {
+  getInvoiceTemplate,
+  getCurrentInvoiceMonth,
+  extractPlotNameFromCollection,
+} from '@/lib/invoice-templates';
 
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
@@ -653,15 +659,15 @@ export async function sendRecordSmsAction(
   return { success: true, count: 1 };
 }
 
-export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId: string) {
+export async function sendRecordsSmsChunkAction(recordIds: string[], collectionId: string) {
   const session = await getSession();
-  if (!session) return { error: 'Unauthorized' };
+  if (!session) return { error: 'Unauthorized', successCount: 0, failCount: recordIds.length };
 
   await dbConnect();
 
   const collection = await Collection.findById(collectionId).lean();
   const fields = await Field.find({ collectionId }).lean();
-  const smsStatusField = fields.find(f => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
+  const smsStatusField = fields.find((f) => ['SMS STATUS', 'SMS_STATUS'].includes(f.name.toUpperCase()));
 
   let statusFieldName = 'SMS Status';
   if (!smsStatusField) {
@@ -669,17 +675,18 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
       collectionId,
       name: 'SMS Status',
       type: 'text',
-      required: false
+      required: false,
     });
   } else {
     statusFieldName = smsStatusField.name;
   }
 
-  // Pre-resolve water unit rate for water bill collections to optimize bulk SMS sending
+  // Pre-resolve water unit rate for water bill collections
   let cachedRate: number | undefined;
-  const isWaterBill = fields.some(f => 
-    ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
-  ) || (collection?.name && collection.name.toUpperCase().includes('WATER'));
+  const isWaterBill =
+    fields.some((f) =>
+      ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
+    ) || (collection?.name && collection.name.toUpperCase().includes('WATER'));
 
   if (isWaterBill) {
     const sampleRecord = await Record.findOne({
@@ -692,9 +699,10 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
     }).lean();
 
     if (sampleRecord) {
-      const sData = sampleRecord.data instanceof Map
-        ? Object.fromEntries(sampleRecord.data)
-        : (sampleRecord.data as Record<string, any>);
+      const sData =
+        sampleRecord.data instanceof Map
+          ? Object.fromEntries(sampleRecord.data)
+          : (sampleRecord.data as Record<string, any>);
       if (typeof sData._unitRate === 'number' && sData._unitRate > 0) {
         cachedRate = sData._unitRate;
       } else {
@@ -714,135 +722,150 @@ export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId
   }
 
   const records = await Record.find({ _id: { $in: recordIds } });
+  const prepared: {
+    recordId: string;
+    phone: string;
+    name: string;
+    houseNo?: string;
+    message: string;
+  }[] = [];
+
+  for (const record of records) {
+    const recordDataObj =
+      record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+
+    const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER']);
+    const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
+
+    const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId, cachedRate);
+    prepared.push({
+      recordId: record._id.toString(),
+      phone: payload.phone,
+      name: payload.name,
+      houseNo,
+      message: payload.message,
+    });
+  }
+
+  const batchResults = await sendBatchSms(
+    prepared.map((p) => ({
+      correlator: p.recordId,
+      phone: p.phone,
+      message: p.message,
+    }))
+  );
+
+  const resultMap = new Map(batchResults.map((r) => [r.correlator, r]));
+
   let successCount = 0;
   let failCount = 0;
   const errors: string[] = [];
+  const bulkOps: any[] = [];
+  const logEntries: any[] = [];
 
-  const BATCH_SIZE = 5;
-  for (let i = 0; i < records.length; i += BATCH_SIZE) {
-    const chunk = records.slice(i, i + BATCH_SIZE);
+  for (const p of prepared) {
+    const res = resultMap.get(p.recordId) || { success: false, error: 'Unknown delivery response' };
+    const isSuccess = res.success;
 
-    await Promise.all(
-      chunk.map(async (record) => {
-        const recordDataObj =
-          record.data instanceof Map
-            ? Object.fromEntries(record.data)
-            : (record.data as Record<string, any>);
+    if (isSuccess) {
+      successCount++;
+      logEntries.push({
+        timestamp: new Date(),
+        level: 'success',
+        category: 'sms',
+        action: 'Bulk SMS Send',
+        message: `SMS delivered successfully to ${p.phone} for house #${p.houseNo || 'N/A'} (${p.name}).`,
+        phone: p.phone,
+        houseNo: p.houseNo,
+        customerName: p.name,
+        collectionName: collection?.name,
+        collectionId,
+        recordId: p.recordId,
+        status: 'success',
+        details: { messageId: res.messageId, message: p.message },
+      });
+    } else {
+      failCount++;
+      const formatted = formatSmsFriendlyMessage(res.error, {
+        phone: p.phone,
+        name: p.name,
+        houseNo: p.houseNo,
+      });
+      errors.push(formatted.message);
+      logEntries.push({
+        timestamp: new Date(),
+        level: 'error',
+        category: 'sms',
+        action: 'Bulk SMS Send',
+        message: formatted.message,
+        phone: p.phone,
+        houseNo: p.houseNo,
+        customerName: p.name,
+        collectionName: collection?.name,
+        collectionId,
+        recordId: p.recordId,
+        status: 'failed',
+        error: res.error,
+        details: {
+          rawError: res.error,
+          isInsufficientCredits: formatted.isInsufficientCredits,
+          isInvalidPhone: formatted.isInvalidPhone,
+          message: p.message,
+        },
+      });
+    }
 
-        const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER']);
-        const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
-
-        const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId, cachedRate);
-
-        if (!payload.phone) {
-          record.data.set(statusFieldName, 'failed');
-          record.markModified('data');
-          await record.save();
-          failCount++;
-          const formatted = formatSmsFriendlyMessage('Empty phone number', {
-            phone: '',
-            name: payload.name,
-            houseNo,
-          });
-          errors.push(formatted.message);
-          await logAppEvent({
-            level: 'error',
-            category: 'sms',
-            action: 'Bulk SMS Send',
-            message: formatted.message,
-            phone: '',
-            houseNo,
-            customerName: payload.name,
-            collectionName: collection?.name,
-            collectionId,
-            recordId: record._id.toString(),
-            status: 'failed',
-            error: 'Phone number is empty',
-            details: { isInvalidPhone: true },
-          });
-          return;
-        }
-
-        const result = await sendSms(payload.phone, payload.message);
-
-        if (result.success) {
-          successCount++;
-          await logAppEvent({
-            level: 'success',
-            category: 'sms',
-            action: 'Bulk SMS Send',
-            message: `SMS delivered successfully to ${payload.phone} for house #${houseNo || 'N/A'} (${payload.name}).`,
-            phone: payload.phone,
-            houseNo,
-            customerName: payload.name,
-            collectionName: collection?.name,
-            collectionId,
-            recordId: record._id.toString(),
-            status: 'success',
-            details: { messageId: result.messageId, message: payload.message },
-          });
-        } else {
-          failCount++;
-          const formatted = formatSmsFriendlyMessage(result.error, {
-            phone: payload.phone,
-            name: payload.name,
-            houseNo,
-          });
-          errors.push(formatted.message);
-          await logAppEvent({
-            level: 'error',
-            category: 'sms',
-            action: 'Bulk SMS Send',
-            message: formatted.message,
-            phone: payload.phone,
-            houseNo,
-            customerName: payload.name,
-            collectionName: collection?.name,
-            collectionId,
-            recordId: record._id.toString(),
-            status: 'failed',
-            error: result.error,
-            details: {
-              rawError: result.error,
-              isInsufficientCredits: formatted.isInsufficientCredits,
-              isInvalidPhone: formatted.isInvalidPhone,
-              message: payload.message,
-            },
-          });
-        }
-
-        record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
-        record.markModified('data');
-        await record.save();
-      })
-    );
+    bulkOps.push({
+      updateOne: {
+        filter: { _id: p.recordId },
+        update: { $set: { [`data.${statusFieldName}`]: isSuccess ? 'sent' : 'failed' } },
+      },
+    });
   }
 
-  // Summary log entry for bulk send
-  await logAppEvent({
-    level: failCount === 0 ? 'success' : (successCount > 0 ? 'warn' : 'error'),
-    category: 'sms',
-    action: 'Bulk SMS Summary',
-    message: `Bulk SMS run completed for "${collection?.name || 'Collection'}": ${successCount} delivered, ${failCount} failed.`,
-    collectionName: collection?.name,
-    collectionId,
-    status: failCount === 0 ? 'success' : 'failed',
-    details: {
-      totalAttempted: records.length,
-      successCount,
-      failCount,
-      sampleErrors: errors.slice(0, 5),
-    },
-  });
+  if (bulkOps.length > 0) {
+    await Record.bulkWrite(bulkOps);
+  }
+  if (logEntries.length > 0) {
+    await AppLog.insertMany(logEntries);
+  }
 
   revalidatePath(`/collections/${collectionId}`);
   revalidatePath('/logs');
   revalidatePath('/');
+
   return {
     success: failCount === 0,
     successCount,
     failCount,
     errors: errors.length > 0 ? errors : undefined,
+  };
+}
+
+export async function sendRecordsSmsBulkAction(recordIds: string[], collectionId: string) {
+  const CHUNK_SIZE = 10;
+  let totalSuccess = 0;
+  let totalFail = 0;
+  const allErrors: string[] = [];
+
+  for (let i = 0; i < recordIds.length; i += CHUNK_SIZE) {
+    const chunk = recordIds.slice(i, i + CHUNK_SIZE);
+    const res = await sendRecordsSmsChunkAction(chunk, collectionId);
+    if ('error' in res && res.error && !res.successCount) {
+      totalFail += chunk.length;
+      allErrors.push(res.error);
+    } else {
+      totalSuccess += res.successCount || 0;
+      totalFail += res.failCount || 0;
+      if (res.errors) allErrors.push(...res.errors);
+    }
+  }
+
+  return {
+    success: totalFail === 0,
+    successCount: totalSuccess,
+    failCount: totalFail,
+    errors: allErrors.length > 0 ? allErrors : undefined,
   };
 }
 
@@ -885,4 +908,405 @@ export async function createRecordsBulk(
   revalidatePath(`/collections/${collectionId}`);
   revalidatePath('/');
   return { success: true };
+}
+
+export async function buildRecordInvoiceSmsPayload(
+  recordDataObj: Record<string, any>,
+  fields: any[],
+  collectionName?: string,
+  templateId?: string,
+  explicitPlotName?: string
+) {
+  // Name
+  const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
+  const nameField = findFieldByPriority(fields, nameFieldCandidates);
+  const name = String(recordDataObj[nameField?.name || ''] || 'Tenant').trim();
+
+  // House No
+  const houseFieldCandidates = ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER', 'ROOM NO', 'HSE/ROOM', 'HOUSE/ROOM'];
+  const houseField = findFieldByPriority(fields, houseFieldCandidates);
+  const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
+
+  // Phone
+  const phoneFieldCandidates = ['PHONE NO', 'PHONE', 'PHONE NUMBER', 'MOBILE'];
+  const phoneField = findFieldByPriority(fields, phoneFieldCandidates);
+  let phone = String(recordDataObj[phoneField?.name || ''] || '').trim();
+
+  // Automatic lookup fallback if phone is empty
+  if (!phone && name && name !== 'Tenant') {
+    const lookedUpPhone = await lookupTenantPhone(name, houseNo);
+    if (lookedUpPhone) {
+      phone = lookedUpPhone;
+    }
+  }
+
+  // Plot Name
+  const plotName = explicitPlotName || extractPlotNameFromCollection(collectionName || '');
+
+  // Month
+  const month = getCurrentInvoiceMonth();
+
+  const template = getInvoiceTemplate(templateId);
+  const message = template.buildMessage({ month, houseNo, plotName });
+
+  return {
+    phone,
+    name,
+    houseNo,
+    month,
+    plotName,
+    message,
+    template,
+    phoneFieldFound: !!phoneField,
+  };
+}
+
+export async function sendRecordInvoiceSmsAction(params: {
+  recordId: string;
+  collectionId: string;
+  templateId?: string;
+  plotName?: string;
+  customMessage?: string;
+}) {
+  const session = await getSession();
+  if (!session) return { error: 'Unauthorized' };
+
+  await dbConnect();
+
+  const record = await Record.findById(params.recordId);
+  if (!record) return { error: 'Record not found' };
+
+  const collection = await Collection.findById(params.collectionId).lean();
+  const fields = await Field.find({ collectionId: params.collectionId }).lean();
+
+  const invoiceStatusField = fields.find(f => ['INVOICE STATUS', 'INVOICE_STATUS'].includes(f.name.toUpperCase()));
+  let statusFieldName = 'Invoice Status';
+  if (!invoiceStatusField) {
+    await Field.create({
+      collectionId: params.collectionId,
+      name: 'Invoice Status',
+      type: 'text',
+      required: false,
+    });
+  } else {
+    statusFieldName = invoiceStatusField.name;
+  }
+
+  const recordDataObj = record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+  const effectiveTemplateId = params.templateId || (collection as any)?.defaultInvoiceTemplateId;
+  const effectivePlotName = params.plotName || (collection as any)?.plotName;
+
+  const payload = await buildRecordInvoiceSmsPayload(
+    recordDataObj,
+    fields,
+    collection?.name,
+    effectiveTemplateId,
+    effectivePlotName
+  );
+
+  const finalMessage = params.customMessage || payload.message;
+
+  if (!payload.phone) {
+    const formatted = formatSmsFriendlyMessage('Empty phone number', {
+      phone: '',
+      name: payload.name,
+      houseNo: payload.houseNo,
+    });
+    await logAppEvent({
+      level: 'error',
+      category: 'sms',
+      action: 'Send Invoice SMS',
+      message: formatted.message,
+      phone: '',
+      houseNo: payload.houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId: params.collectionId,
+      recordId: params.recordId,
+      status: 'failed',
+      error: 'Phone number is empty',
+      details: { isInvalidPhone: true, templateId: payload.template.id, templateName: payload.template.name },
+    });
+    return { error: formatted.message };
+  }
+
+  const result = await sendSms(payload.phone, finalMessage);
+
+  record.data.set(statusFieldName, result.success ? 'sent' : 'failed');
+  record.markModified('data');
+  await record.save();
+
+  if (result.success) {
+    await logAppEvent({
+      level: 'success',
+      category: 'sms',
+      action: 'Send Invoice SMS',
+      message: `Invoice SMS sent successfully to ${payload.phone} for house #${payload.houseNo || 'N/A'} (${payload.name}) [${payload.template.name}].`,
+      phone: payload.phone,
+      houseNo: payload.houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId: params.collectionId,
+      recordId: params.recordId,
+      status: 'success',
+      details: { messageId: result.messageId, message: finalMessage, templateId: payload.template.id, templateName: payload.template.name },
+    });
+  } else {
+    const formatted = formatSmsFriendlyMessage(result.error, {
+      phone: payload.phone,
+      name: payload.name,
+      houseNo: payload.houseNo,
+    });
+    await logAppEvent({
+      level: 'error',
+      category: 'sms',
+      action: 'Send Invoice SMS',
+      message: formatted.message,
+      phone: payload.phone,
+      houseNo: payload.houseNo,
+      customerName: payload.name,
+      collectionName: collection?.name,
+      collectionId: params.collectionId,
+      recordId: params.recordId,
+      status: 'failed',
+      error: result.error,
+      details: {
+        rawError: result.error,
+        isInsufficientCredits: formatted.isInsufficientCredits,
+        isInvalidPhone: formatted.isInvalidPhone,
+        message: finalMessage,
+        templateId: payload.template.id,
+      },
+    });
+    return { error: formatted.message };
+  }
+
+  revalidatePath(`/collections/${params.collectionId}`);
+  revalidatePath('/logs');
+  revalidatePath('/');
+
+  return { success: true };
+}
+
+export async function sendRecordsInvoiceSmsChunkAction(params: {
+  recordIds: string[];
+  collectionId: string;
+  templateId?: string;
+  plotName?: string;
+  customMessage?: string;
+}) {
+  const session = await getSession();
+  if (!session) return { error: 'Unauthorized', successCount: 0, failCount: params.recordIds.length };
+
+  await dbConnect();
+
+  const collection = await Collection.findById(params.collectionId).lean();
+  const fields = await Field.find({ collectionId: params.collectionId }).lean();
+
+  const invoiceStatusField = fields.find((f) => ['INVOICE STATUS', 'INVOICE_STATUS'].includes(f.name.toUpperCase()));
+  let statusFieldName = 'Invoice Status';
+  if (!invoiceStatusField) {
+    await Field.create({
+      collectionId: params.collectionId,
+      name: 'Invoice Status',
+      type: 'text',
+      required: false,
+    });
+  } else {
+    statusFieldName = invoiceStatusField.name;
+  }
+
+  const effectiveTemplateId = params.templateId || (collection as any)?.defaultInvoiceTemplateId;
+  const effectivePlotName = params.plotName || (collection as any)?.plotName;
+
+  const records = await Record.find({ _id: { $in: params.recordIds } });
+  const prepared: {
+    recordId: string;
+    phone: string;
+    name: string;
+    houseNo?: string;
+    message: string;
+    template: any;
+  }[] = [];
+
+  for (const record of records) {
+    const recordDataObj =
+      record.data instanceof Map ? Object.fromEntries(record.data) : (record.data as Record<string, any>);
+
+    const payload = await buildRecordInvoiceSmsPayload(
+      recordDataObj,
+      fields,
+      collection?.name,
+      effectiveTemplateId,
+      effectivePlotName
+    );
+
+    const message = params.customMessage || payload.message;
+
+    prepared.push({
+      recordId: record._id.toString(),
+      phone: payload.phone,
+      name: payload.name,
+      houseNo: payload.houseNo,
+      message,
+      template: payload.template,
+    });
+  }
+
+  const batchResults = await sendBatchSms(
+    prepared.map((p) => ({
+      correlator: p.recordId,
+      phone: p.phone,
+      message: p.message,
+    }))
+  );
+
+  const resultMap = new Map(batchResults.map((r) => [r.correlator, r]));
+
+  let successCount = 0;
+  let failCount = 0;
+  const errors: string[] = [];
+  const bulkOps: any[] = [];
+  const logEntries: any[] = [];
+
+  for (const p of prepared) {
+    const res = resultMap.get(p.recordId) || { success: false, error: 'Unknown delivery response' };
+    const isSuccess = res.success;
+
+    if (isSuccess) {
+      successCount++;
+      logEntries.push({
+        timestamp: new Date(),
+        level: 'success',
+        category: 'sms',
+        action: 'Bulk Invoice SMS',
+        message: `Invoice SMS sent successfully to ${p.phone} for house #${p.houseNo || 'N/A'} (${p.name}) [${p.template.name}].`,
+        phone: p.phone,
+        houseNo: p.houseNo,
+        customerName: p.name,
+        collectionName: collection?.name,
+        collectionId: params.collectionId,
+        recordId: p.recordId,
+        status: 'success',
+        details: { messageId: res.messageId, message: p.message, templateId: p.template.id, templateName: p.template.name },
+      });
+    } else {
+      failCount++;
+      const formatted = formatSmsFriendlyMessage(res.error, {
+        phone: p.phone,
+        name: p.name,
+        houseNo: p.houseNo,
+      });
+      errors.push(formatted.message);
+      logEntries.push({
+        timestamp: new Date(),
+        level: 'error',
+        category: 'sms',
+        action: 'Bulk Invoice SMS',
+        message: formatted.message,
+        phone: p.phone,
+        houseNo: p.houseNo,
+        customerName: p.name,
+        collectionName: collection?.name,
+        collectionId: params.collectionId,
+        recordId: p.recordId,
+        status: 'failed',
+        error: res.error,
+        details: {
+          rawError: res.error,
+          isInsufficientCredits: formatted.isInsufficientCredits,
+          isInvalidPhone: formatted.isInvalidPhone,
+          message: p.message,
+          templateId: p.template.id,
+        },
+      });
+    }
+
+    bulkOps.push({
+      updateOne: {
+        filter: { _id: p.recordId },
+        update: { $set: { [`data.${statusFieldName}`]: isSuccess ? 'sent' : 'failed' } },
+      },
+    });
+  }
+
+  if (bulkOps.length > 0) {
+    await Record.bulkWrite(bulkOps);
+  }
+  if (logEntries.length > 0) {
+    await AppLog.insertMany(logEntries);
+  }
+
+  revalidatePath(`/collections/${params.collectionId}`);
+  revalidatePath('/logs');
+  revalidatePath('/');
+
+  return {
+    success: failCount === 0,
+    successCount,
+    failCount,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+}
+
+export async function sendRecordsInvoiceSmsBulkAction(params: {
+  recordIds: string[];
+  collectionId: string;
+  templateId?: string;
+  plotName?: string;
+  customMessage?: string;
+}) {
+  const CHUNK_SIZE = 10;
+  let totalSuccess = 0;
+  let totalFail = 0;
+  const allErrors: string[] = [];
+
+  for (let i = 0; i < params.recordIds.length; i += CHUNK_SIZE) {
+    const chunkIds = params.recordIds.slice(i, i + CHUNK_SIZE);
+    const res = await sendRecordsInvoiceSmsChunkAction({
+      recordIds: chunkIds,
+      collectionId: params.collectionId,
+      templateId: params.templateId,
+      plotName: params.plotName,
+      customMessage: params.customMessage,
+    });
+
+    if ('error' in res && res.error && !res.successCount) {
+      totalFail += chunkIds.length;
+      allErrors.push(res.error);
+    } else {
+      totalSuccess += res.successCount || 0;
+      totalFail += res.failCount || 0;
+      if (res.errors) allErrors.push(...res.errors);
+    }
+  }
+
+  const collection = await Collection.findById(params.collectionId).lean();
+  const effectiveTemplateId = params.templateId || (collection as any)?.defaultInvoiceTemplateId;
+  const template = getInvoiceTemplate(effectiveTemplateId);
+
+  await logAppEvent({
+    level: totalFail === 0 ? 'success' : (totalSuccess > 0 ? 'warn' : 'error'),
+    category: 'sms',
+    action: 'Bulk Invoice SMS Summary',
+    message: `Bulk Invoice SMS run completed for "${collection?.name || 'Collection'}": ${totalSuccess} sent, ${totalFail} failed. [${template.name}]`,
+    collectionName: collection?.name,
+    collectionId: params.collectionId,
+    status: totalFail === 0 ? 'success' : 'failed',
+    details: {
+      totalAttempted: params.recordIds.length,
+      successCount: totalSuccess,
+      failCount: totalFail,
+      templateId: template.id,
+      templateName: template.name,
+      sampleErrors: allErrors.slice(0, 5),
+    },
+  });
+
+  return {
+    success: totalFail === 0,
+    successCount: totalSuccess,
+    failCount: totalFail,
+    errors: allErrors.length > 0 ? allErrors : undefined,
+  };
 }

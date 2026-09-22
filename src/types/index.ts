@@ -58,6 +58,8 @@ export interface ICollection {
   createdAt: Date;
   fieldCount?: number;
   recordCount?: number;
+  defaultInvoiceTemplateId?: string;
+  plotName?: string;
 }
 
 export interface IField {

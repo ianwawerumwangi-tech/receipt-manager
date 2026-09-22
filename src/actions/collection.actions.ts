@@ -49,7 +49,10 @@ export async function createCollection(data: { name: string; description?: strin
   return { success: true, _id: collection._id.toString() };
 }
 
-export async function updateCollection(id: string, data: { name: string; description?: string }) {
+export async function updateCollection(
+  id: string,
+  data: { name?: string; description?: string; defaultInvoiceTemplateId?: string; plotName?: string }
+) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };
 

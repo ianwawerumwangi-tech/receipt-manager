@@ -49,6 +49,7 @@ import {
   updateRecordsBulk,
   createRecordsBulk,
   sendRecordSmsAction,
+  sendRecordsSmsChunkAction,
   sendRecordsSmsBulkAction,
 } from '@/actions/record.actions';
 import {
@@ -63,11 +64,13 @@ import {
   ChevronLeft,
   Loader2,
   MessageSquare,
+  BellRing,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ImportDialog } from '../ImportDialog';
+import { SendInvoiceDialog } from './SendInvoiceDialog';
 import { extractRecordInstallments } from '@/lib/utils';
 
 type FieldType = 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';
@@ -78,6 +81,8 @@ interface CollectionItem {
   description?: string;
   fieldCount: number;
   recordCount: number;
+  defaultInvoiceTemplateId?: string;
+  plotName?: string;
 }
 
 interface FieldItem {
@@ -179,6 +184,8 @@ export function CollectionViewClient({
   // SMS States & Handlers
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [sendingSmsBulk, setSendingSmsBulk] = useState(false);
+  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
+  const [invoiceTargetRecord, setInvoiceTargetRecord] = useState<RecordItem | null>(null);
 
   const getRecordInstallments = useCallback((record: RecordItem): { amount: number; rct: string }[] => {
     return extractRecordInstallments(record.data, fields);
@@ -251,7 +258,7 @@ export function CollectionViewClient({
           { id: toastId }
         );
 
-        const res = await sendRecordsSmsBulkAction(batchIds, collection._id);
+        const res = await sendRecordsSmsChunkAction(batchIds, collection._id);
 
         if ('error' in res && res.error && !res.successCount) {
           totalFailCount += batchIds.length;
@@ -262,6 +269,11 @@ export function CollectionViewClient({
           if (res.errors) {
             allErrors.push(...res.errors);
           }
+        }
+
+        // Pacing delay (250ms) between batches to guarantee zero rate-limit spikes on BongaTech and stay well within Vercel Free execution limits
+        if (i + CLIENT_BATCH_SIZE < selectedRecordIds.length) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
 
@@ -869,9 +881,9 @@ export function CollectionViewClient({
 
   const renderCellValue = (field: FieldItem, value: unknown) => {
     if (value === undefined || value === null || value === '') return <span className="text-muted-foreground">-</span>;
-    if (field.name.toUpperCase() === 'SMS STATUS') {
+    if (field.name.toUpperCase() === 'SMS STATUS' || field.name.toUpperCase() === 'INVOICE STATUS') {
       const valStr = String(value).toLowerCase();
-      if (valStr === 'sent') return <Badge variant="default">sent</Badge>;
+      if (valStr === 'sent') return <Badge variant="default" className="bg-emerald-600 hover:bg-emerald-700">sent</Badge>;
       if (valStr === 'failed') return <Badge variant="destructive">failed</Badge>;
       return <Badge variant="secondary">{valStr}</Badge>;
     }
@@ -988,6 +1000,18 @@ export function CollectionViewClient({
                         Send SMS ({selectedRecordIds.length})
                       </Button>
                     )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setInvoiceTargetRecord(null);
+                        setInvoiceDialogOpen(true);
+                      }}
+                      className="border-amber-600 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                    >
+                      <BellRing className="h-4 w-4 mr-1.5" />
+                      {selectedRecordIds.length > 0 ? `Send Invoices (${selectedRecordIds.length})` : 'Send Invoices'}
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"
@@ -1120,6 +1144,17 @@ export function CollectionViewClient({
                                 >
                                   <MessageSquare className="h-3.5 w-3.5 text-primary" />
                                 </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Send Rent Due Invoice SMS"
+                                  onClick={() => {
+                                    setInvoiceTargetRecord(record);
+                                    setInvoiceDialogOpen(true);
+                                  }}
+                                >
+                                  <BellRing className="h-3.5 w-3.5 text-amber-600" />
+                                </Button>
                                 <Button variant="ghost" size="sm" onClick={() => handleEditRecord(record)}>
                                   <Pencil className="h-3 w-3" />
                                 </Button>
@@ -1139,6 +1174,25 @@ export function CollectionViewClient({
           </CardContent>
         </Card>
       </div>
+
+      {/* Send Invoice Dialog */}
+      <SendInvoiceDialog
+        open={invoiceDialogOpen}
+        onOpenChange={setInvoiceDialogOpen}
+        collection={collection}
+        fields={fields}
+        selectedRecords={
+          invoiceTargetRecord
+            ? [invoiceTargetRecord]
+            : records.filter((r) => selectedRecordIds.includes(r._id))
+        }
+        allRecords={records}
+        onSuccess={() => {
+          setSelectedRecordIds([]);
+          setInvoiceTargetRecord(null);
+          router.refresh();
+        }}
+      />
 
       {/* Edit Collection Name Dialog */}
       <Dialog open={editNameOpen} onOpenChange={setEditNameOpen}>
