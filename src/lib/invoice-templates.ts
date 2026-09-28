@@ -8,8 +8,76 @@ export interface InvoiceTemplate {
   buildMessage: (params: { month: string; houseNo?: string; plotName?: string }) => string;
 }
 
+export const ALL_MONTHS = [
+  { short: 'JAN', full: 'JANUARY' },
+  { short: 'FEB', full: 'FEBRUARY' },
+  { short: 'MAR', full: 'MARCH' },
+  { short: 'APR', full: 'APRIL' },
+  { short: 'MAY', full: 'MAY' },
+  { short: 'JUN', full: 'JUNE' },
+  { short: 'JUL', full: 'JULY' },
+  { short: 'AUG', full: 'AUGUST' },
+  { short: 'SEP', full: 'SEPTEMBER' },
+  { short: 'OCT', full: 'OCTOBER' },
+  { short: 'NOV', full: 'NOVEMBER' },
+  { short: 'DEC', full: 'DECEMBER' },
+];
+
 export function getCurrentInvoiceMonth(): string {
   return new Date().toLocaleString('en-US', { month: 'long' }).toUpperCase();
+}
+
+export function extractMonthFromCollection(name: string): string | null {
+  if (!name) return null;
+  const upper = name.toUpperCase();
+  for (const m of ALL_MONTHS) {
+    const regex = new RegExp(`\\b(${m.full}|${m.short})\\b`, 'i');
+    if (regex.test(upper)) {
+      return m.full;
+    }
+  }
+  return null;
+}
+
+export function formatSelectedMonths(months: string[]): string {
+  if (!months || months.length === 0) return '';
+  if (months.length === 1) return months[0];
+  if (months.length === 2) return `${months[0]} & ${months[1]}`;
+  return `${months.slice(0, -1).join(', ')} & ${months[months.length - 1]}`;
+}
+
+export function templateUsesHouseNo(template: InvoiceTemplate): boolean {
+  if (!template) return false;
+  const sample = template.buildMessage({ month: 'TEST', houseNo: 'SAMPLE_HSE_123' });
+  return sample.includes('SAMPLE_HSE_123');
+}
+
+export function resolveInvoiceMessage(
+  templateOrCustomText: string,
+  params: {
+    houseNo?: string;
+    name?: string;
+    month?: string;
+    plotName?: string;
+    balance?: string | number;
+  }
+): string {
+  if (!templateOrCustomText) return '';
+  let result = templateOrCustomText;
+
+  const house = params.houseNo !== undefined ? String(params.houseNo).trim() : '';
+  const name = params.name !== undefined ? String(params.name).trim() : 'Tenant';
+  const month = params.month !== undefined ? String(params.month).trim() : '';
+  const plot = params.plotName !== undefined ? String(params.plotName).trim() : '';
+  const balance = params.balance !== undefined ? String(params.balance).trim() : '';
+
+  result = result.replace(/\{houseNo\}|\{house_no\}|\{house\}|\{hseNo\}|\{hse\}/gi, house);
+  result = result.replace(/\{name\}|\{tenant\}|\{customer\}|\{client\}/gi, name);
+  result = result.replace(/\{month\}|\{months\}|\{period\}/gi, month);
+  result = result.replace(/\{plotName\}|\{plot_name\}|\{plot\}|\{property\}/gi, plot);
+  result = result.replace(/\{balance\}|\{bal\}|\{amount\}/gi, balance);
+
+  return result;
 }
 
 export function extractPlotNameFromCollection(name: string): string {

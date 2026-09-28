@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -27,14 +28,28 @@ import {
   getInvoiceTemplate,
   getCurrentInvoiceMonth,
   extractPlotNameFromCollection,
+  extractMonthFromCollection,
+  formatSelectedMonths,
+  templateUsesHouseNo,
+  resolveInvoiceMessage,
+  ALL_MONTHS,
 } from '@/lib/invoice-templates';
 import {
   sendRecordInvoiceSmsAction,
   sendRecordsInvoiceSmsChunkAction,
 } from '@/actions/record.actions';
 import { updateCollection } from '@/actions/collection.actions';
-import { Loader2, Send, MessageSquare, CheckCircle, AlertCircle, Building2, User } from 'lucide-react';
+import {
+  Loader2,
+  Send,
+  MessageSquare,
+  AlertCircle,
+  Building2,
+  Calendar,
+  RotateCcw,
+} from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 interface FieldItem {
   _id: string;
@@ -101,6 +116,17 @@ export function SendInvoiceDialog({
   const [plotName, setPlotName] = useState<string>(
     collection.plotName || extractPlotNameFromCollection(collection.name)
   );
+
+  // Month selection state
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+  const [billingMonth, setBillingMonth] = useState<string>('');
+  const [isMultiMonth, setIsMultiMonth] = useState<boolean>(false);
+
+  // SMS message editing state
+  const [messageText, setMessageText] = useState<string>('');
+  const [isMessageModified, setIsMessageModified] = useState<boolean>(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   const [saveAsDefault, setSaveAsDefault] = useState<boolean>(false);
   const [targetScope, setTargetScope] = useState<'selected' | 'all'>(
     selectedRecords.length > 0 ? 'selected' : 'all'
@@ -119,21 +145,52 @@ export function SendInvoiceDialog({
   // Sync state whenever dialog opens
   useEffect(() => {
     if (open) {
-      setSelectedTemplateId(collection.defaultInvoiceTemplateId || 'sidian-111999');
-      setPlotName(collection.plotName || extractPlotNameFromCollection(collection.name));
+      const initialTemplateId = collection.defaultInvoiceTemplateId || 'sidian-111999';
+      const initialPlot = collection.plotName || extractPlotNameFromCollection(collection.name);
+      const detectedMonth = extractMonthFromCollection(collection.name);
+      const initialMonth = detectedMonth || getCurrentInvoiceMonth();
+
+      setSelectedTemplateId(initialTemplateId);
+      setPlotName(initialPlot);
+      setSelectedMonths([initialMonth]);
+      setBillingMonth(initialMonth);
+      setIsMultiMonth(false);
       setTargetScope(selectedRecords.length > 0 ? 'selected' : 'all');
       setSaveAsDefault(false);
       setSkipZeroBalance(false);
       setProgress(null);
+      setIsMessageModified(false);
+
+      const templ = getInvoiceTemplate(initialTemplateId);
+      const initialMsg = templ.buildMessage({
+        month: initialMonth,
+        houseNo: '{houseNo}',
+        plotName: initialPlot.trim() || undefined,
+      });
+      setMessageText(initialMsg);
     }
   }, [open, collection, selectedRecords.length]);
-
-  const currentMonth = getCurrentInvoiceMonth();
 
   // Selected template object
   const template: InvoiceTemplate = useMemo(() => {
     return getInvoiceTemplate(selectedTemplateId);
   }, [selectedTemplateId]);
+
+  const templateNeedsHouseNo = useMemo(() => {
+    return templateUsesHouseNo(template);
+  }, [template]);
+
+  // Auto-generate template message when template, billingMonth, or plotName changes if user hasn't edited manually
+  useEffect(() => {
+    if (open && !isMessageModified) {
+      const defaultMsg = template.buildMessage({
+        month: billingMonth.trim() || 'MONTH',
+        houseNo: '{houseNo}',
+        plotName: plotName.trim() || undefined,
+      });
+      setMessageText(defaultMsg);
+    }
+  }, [template, billingMonth, plotName, isMessageModified, open]);
 
   // Extract helper fields
   const nameField = useMemo(
@@ -169,21 +226,88 @@ export function SendInvoiceDialog({
   const sampleRecord = targetRecords[0] || allRecords[0];
   const sampleName = sampleRecord && nameField ? String(sampleRecord.data[nameField.name] || 'Tenant') : 'Tenant';
   const sampleHouseNo = sampleRecord && houseField ? String(sampleRecord.data[houseField.name] || '') : '12';
-  const samplePhone = sampleRecord && phoneField ? String(sampleRecord.data[phoneField.name] || '07XXXXXXXX') : '07XXXXXXXX';
+  const sampleBal = sampleRecord && balanceField ? parseMathExpression(sampleRecord.data[balanceField.name]) : 0;
+  const sampleBalStr = sampleBal > 0 ? sampleBal.toLocaleString() : '0';
 
+  // Live rendered preview for sample recipient
   const previewMessage = useMemo(() => {
-    return template.buildMessage({
-      month: currentMonth,
+    return resolveInvoiceMessage(messageText, {
       houseNo: sampleHouseNo,
+      name: sampleName,
+      month: billingMonth.trim() || undefined,
       plotName: plotName.trim() || undefined,
+      balance: sampleBalStr,
     });
-  }, [template, currentMonth, sampleHouseNo, plotName]);
+  }, [messageText, sampleHouseNo, sampleName, billingMonth, plotName, sampleBalStr]);
 
   const smsPartsCount = Math.ceil(previewMessage.length / 160) || 1;
+
+  // Manual month button click handler
+  const handleMonthClick = (monthFull: string) => {
+    if (isMultiMonth) {
+      let newMonths: string[];
+      if (selectedMonths.includes(monthFull)) {
+        newMonths = selectedMonths.filter((m) => m !== monthFull);
+      } else {
+        newMonths = [...selectedMonths, monthFull];
+        // Sort in calendar order
+        newMonths.sort((a, b) => {
+          const idxA = ALL_MONTHS.findIndex((m) => m.full === a);
+          const idxB = ALL_MONTHS.findIndex((m) => m.full === b);
+          return idxA - idxB;
+        });
+      }
+      setSelectedMonths(newMonths);
+      const formatted = formatSelectedMonths(newMonths);
+      setBillingMonth(formatted);
+    } else {
+      setSelectedMonths([monthFull]);
+      setBillingMonth(monthFull);
+    }
+  };
+
+  // Insert variable tag into textarea at cursor position
+  const handleInsertVariable = (variable: string) => {
+    const el = textareaRef.current;
+    if (el) {
+      const start = el.selectionStart ?? messageText.length;
+      const end = el.selectionEnd ?? messageText.length;
+      const before = messageText.substring(0, start);
+      const after = messageText.substring(end);
+      const newText = before + variable + after;
+      setMessageText(newText);
+      setIsMessageModified(true);
+      setTimeout(() => {
+        el.focus();
+        const cursorPosition = start + variable.length;
+        el.setSelectionRange(cursorPosition, cursorPosition);
+      }, 0);
+    } else {
+      setMessageText((prev) => (prev ? prev + ' ' + variable : variable));
+      setIsMessageModified(true);
+    }
+  };
+
+  // Reset message to template default
+  const handleResetMessage = () => {
+    const defaultMsg = template.buildMessage({
+      month: billingMonth.trim() || 'MONTH',
+      houseNo: '{houseNo}',
+      plotName: plotName.trim() || undefined,
+    });
+    setMessageText(defaultMsg);
+    setIsMessageModified(false);
+    toast.info('Message restored to template default');
+  };
 
   const handleSend = async () => {
     if (targetRecords.length === 0) {
       toast.error('No tenants selected to receive invoices');
+      return;
+    }
+
+    if (!messageText.trim()) {
+      toast.error('Invoice SMS message cannot be empty');
       return;
     }
 
@@ -203,6 +327,8 @@ export function SendInvoiceDialog({
           collectionId: collection._id,
           templateId: selectedTemplateId,
           plotName: plotName.trim(),
+          month: billingMonth.trim(),
+          customMessage: messageText.trim(),
         });
 
         if ('error' in res && res.error) {
@@ -238,6 +364,8 @@ export function SendInvoiceDialog({
             collectionId: collection._id,
             templateId: selectedTemplateId,
             plotName: plotName.trim(),
+            month: billingMonth.trim(),
+            customMessage: messageText.trim(),
           });
 
           if ('error' in res && res.error && !res.successCount) {
@@ -296,7 +424,7 @@ export function SendInvoiceDialog({
             <div>
               <DialogTitle className="text-xl">Send Rent Due Invoices</DialogTitle>
               <DialogDescription>
-                Dispatch rent due reminder SMS to tenants for month of <strong className="text-foreground">{currentMonth}</strong>.
+                Dispatch rent due reminder SMS to tenants for <strong className="text-foreground">{billingMonth || 'selected month'}</strong>.
               </DialogDescription>
             </div>
           </div>
@@ -371,7 +499,17 @@ export function SendInvoiceDialog({
               value={selectedTemplateId}
               disabled={loading}
               onValueChange={(val) => {
-                if (val) setSelectedTemplateId(val);
+                if (val) {
+                  setSelectedTemplateId(val);
+                  const templ = getInvoiceTemplate(val);
+                  const newMsg = templ.buildMessage({
+                    month: billingMonth.trim() || 'MONTH',
+                    houseNo: '{houseNo}',
+                    plotName: plotName.trim() || undefined,
+                  });
+                  setMessageText(newMsg);
+                  setIsMessageModified(false);
+                }
               }}
             >
               <SelectTrigger id="templateSelect" className="w-full">
@@ -390,10 +528,10 @@ export function SendInvoiceDialog({
             </Select>
           </div>
 
-          {/* Optional Plot Name for templates with #Plot Name / House No */}
+          {/* Optional Plot Name & Billing Month Section */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label htmlFor="plotNameInput" className="text-xs text-muted-foreground">
+              <Label htmlFor="plotNameInput" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                 Plot / Property Name (Optional)
               </Label>
               <div className="relative">
@@ -411,26 +549,228 @@ export function SendInvoiceDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Billing Month</Label>
-              <Input value={currentMonth} disabled className="h-9 text-sm bg-muted font-medium" />
-              <p className="text-[11px] text-muted-foreground">Calendar month automatically applied</p>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="billingMonthInput" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  Billing Month(s)
+                </Label>
+                <div className="flex items-center gap-1.5">
+                  <Checkbox
+                    id="multiMonthToggle"
+                    checked={isMultiMonth}
+                    disabled={loading}
+                    onCheckedChange={(checked) => {
+                      const val = !!checked;
+                      setIsMultiMonth(val);
+                      if (!val && selectedMonths.length > 1) {
+                        const single = [selectedMonths[selectedMonths.length - 1]];
+                        setSelectedMonths(single);
+                        setBillingMonth(single[0]);
+                      }
+                    }}
+                  />
+                  <Label htmlFor="multiMonthToggle" className="text-[11px] cursor-pointer text-muted-foreground select-none">
+                    Multi-month
+                  </Label>
+                </div>
+              </div>
+              <div className="relative">
+                <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="billingMonthInput"
+                  value={billingMonth}
+                  disabled={loading}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setBillingMonth(val);
+                    const matchingMonths = ALL_MONTHS.filter((m) => {
+                      const regex = new RegExp(`\\b(${m.full}|${m.short})\\b`, 'i');
+                      return regex.test(val);
+                    }).map((m) => m.full);
+                    setSelectedMonths(matchingMonths);
+                  }}
+                  placeholder="e.g. OCTOBER or OCTOBER & NOVEMBER"
+                  className="pl-9 h-9 text-sm font-medium"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">Select below or type custom period</p>
             </div>
           </div>
 
-          {/* Live SMS Message Preview */}
-          <div className="space-y-2">
+          {/* Quick Month Toggle Buttons */}
+          <div className="space-y-1.5 pt-0.5">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>Select Month:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const curr = getCurrentInvoiceMonth();
+                  setSelectedMonths([curr]);
+                  setBillingMonth(curr);
+                  setIsMultiMonth(false);
+                }}
+                className="hover:underline text-primary text-[11px] font-medium"
+              >
+                Set to Current Month ({getCurrentInvoiceMonth()})
+              </button>
+            </div>
+            <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
+              {ALL_MONTHS.map((m) => {
+                const isSelected = selectedMonths.includes(m.full);
+                return (
+                  <button
+                    key={m.short}
+                    type="button"
+                    disabled={loading}
+                    onClick={() => handleMonthClick(m.full)}
+                    className={cn(
+                      'h-7 text-xs rounded transition-all border text-center flex items-center justify-center font-medium',
+                      isSelected
+                        ? 'bg-primary text-primary-foreground border-primary shadow-xs font-semibold'
+                        : 'bg-background hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                    )}
+                  >
+                    {m.short}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Invoice SMS Message Editor */}
+          <div className="space-y-2 pt-1">
             <div className="flex items-center justify-between">
-              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                SMS Preview {sampleRecord ? `(Sample: ${sampleName}, House #${sampleHouseNo || 'N/A'})` : ''}
-              </Label>
-              <span className="text-xs text-muted-foreground font-mono">
-                {previewMessage.length} chars (~{smsPartsCount} SMS)
-              </span>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="smsMessageEditor" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Invoice SMS Message (Editable)
+                </Label>
+                {isMessageModified && (
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 bg-amber-500/10 text-amber-600 border-amber-500/20">
+                    Edited
+                  </Badge>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                {isMessageModified && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleResetMessage}
+                    className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Reset to Default
+                  </Button>
+                )}
+                <span
+                  className={cn(
+                    'text-xs font-mono',
+                    smsPartsCount > 1 ? 'text-amber-600 font-medium' : 'text-muted-foreground'
+                  )}
+                >
+                  {previewMessage.length} chars (~{smsPartsCount} SMS)
+                </span>
+              </div>
             </div>
 
-            <div className="p-3.5 rounded-lg border bg-muted/40 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground select-all border-dashed">
-              {previewMessage}
+            {/* Quick Variable Insert Tags */}
+            <div className="flex flex-wrap items-center gap-1.5 py-1">
+              <span className="text-[11px] text-muted-foreground mr-1">Insert Variable:</span>
+              <button
+                type="button"
+                onClick={() => handleInsertVariable('{houseNo}')}
+                className="text-[11px] font-mono px-2 py-0.5 rounded border border-border bg-background hover:bg-muted transition-colors text-foreground"
+                title="Inserts tenant's house/unit number"
+              >
+                {'{houseNo}'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleInsertVariable('{month}')}
+                className="text-[11px] font-mono px-2 py-0.5 rounded border border-border bg-background hover:bg-muted transition-colors text-foreground"
+                title="Inserts billing month(s)"
+              >
+                {'{month}'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleInsertVariable('{name}')}
+                className="text-[11px] font-mono px-2 py-0.5 rounded border border-border bg-background hover:bg-muted transition-colors text-foreground"
+                title="Inserts tenant name"
+              >
+                {'{name}'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleInsertVariable('{plotName}')}
+                className="text-[11px] font-mono px-2 py-0.5 rounded border border-border bg-background hover:bg-muted transition-colors text-foreground"
+                title="Inserts plot/property name"
+              >
+                {'{plotName}'}
+              </button>
+              {balanceField && (
+                <button
+                  type="button"
+                  onClick={() => handleInsertVariable('{balance}')}
+                  className="text-[11px] font-mono px-2 py-0.5 rounded border border-border bg-background hover:bg-muted transition-colors text-foreground"
+                  title="Inserts tenant balance"
+                >
+                  {'{balance}'}
+                </button>
+              )}
             </div>
+
+            <Textarea
+              id="smsMessageEditor"
+              ref={textareaRef}
+              value={messageText}
+              disabled={loading}
+              onChange={(e) => {
+                setMessageText(e.target.value);
+                setIsMessageModified(true);
+              }}
+              placeholder="Type or edit invoice SMS message..."
+              rows={4}
+              className="font-mono text-xs leading-relaxed resize-y min-h-[90px]"
+            />
+
+            {/* Warning if sending to multiple tenants without houseNo for templates that need it */}
+            {targetRecords.length > 1 &&
+              templateNeedsHouseNo &&
+              !messageText.includes('{houseNo}') &&
+              !messageText.includes('{house}') && (
+                <div className="p-2.5 rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>
+                    <strong>Note:</strong> This template uses house numbers for tenant payments, but{' '}
+                    <code className="bg-amber-500/20 px-1 py-0.5 rounded">{'{houseNo}'}</code> is not in your message.
+                    Recipients might not get their specific unit number in the SMS.
+                  </span>
+                </div>
+              )}
+          </div>
+
+          {/* Live SMS Preview */}
+          <div className="space-y-1.5 p-3 rounded-lg border bg-muted/30">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-muted-foreground flex items-center gap-1.5">
+                Live Recipient Preview
+                {sampleRecord && (
+                  <Badge variant="outline" className="font-normal text-[11px]">
+                    Sample: {sampleName} (House #{sampleHouseNo || 'N/A'})
+                  </Badge>
+                )}
+              </span>
+              <span className="text-[11px] text-muted-foreground">What the recipient sees</span>
+            </div>
+
+            <div className="p-3 rounded-md border bg-background font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground select-all shadow-xs">
+              {previewMessage || <span className="text-muted-foreground italic">No message content</span>}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Dynamic variables like {'{houseNo}'}, {'{name}'}, and {'{balance}'} are automatically personalized for each tenant upon dispatch.
+            </p>
           </div>
 
           {/* Save as default for collection */}

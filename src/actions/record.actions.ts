@@ -15,6 +15,7 @@ import {
   getInvoiceTemplate,
   getCurrentInvoiceMonth,
   extractPlotNameFromCollection,
+  resolveInvoiceMessage,
 } from '@/lib/invoice-templates';
 
 function parseMathExpression(val: any): number {
@@ -915,7 +916,9 @@ export async function buildRecordInvoiceSmsPayload(
   fields: any[],
   collectionName?: string,
   templateId?: string,
-  explicitPlotName?: string
+  explicitPlotName?: string,
+  explicitMonth?: string,
+  customMessage?: string
 ) {
   // Name
   const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
@@ -940,14 +943,32 @@ export async function buildRecordInvoiceSmsPayload(
     }
   }
 
+  // Balance
+  const balanceFieldCandidates = ['BALANCE', 'CURRENT BALANCE', 'ACTUAL BALANCE', 'CLOSING BALANCE', 'BAL'];
+  const balanceField = findFieldByPriority(fields, balanceFieldCandidates);
+  const balanceVal = balanceField ? parseMathExpression(recordDataObj[balanceField.name]) : 0;
+  const balanceStr = balanceVal ? balanceVal.toLocaleString() : '0';
+
   // Plot Name
-  const plotName = explicitPlotName || extractPlotNameFromCollection(collectionName || '');
+  const plotName = explicitPlotName !== undefined ? explicitPlotName.trim() : extractPlotNameFromCollection(collectionName || '');
 
   // Month
-  const month = getCurrentInvoiceMonth();
+  const month = explicitMonth?.trim() || getCurrentInvoiceMonth();
 
   const template = getInvoiceTemplate(templateId);
-  const message = template.buildMessage({ month, houseNo, plotName });
+
+  let message = '';
+  if (customMessage && customMessage.trim()) {
+    message = resolveInvoiceMessage(customMessage.trim(), {
+      houseNo,
+      name,
+      month,
+      plotName,
+      balance: balanceStr,
+    });
+  } else {
+    message = template.buildMessage({ month, houseNo, plotName });
+  }
 
   return {
     phone,
@@ -966,6 +987,7 @@ export async function sendRecordInvoiceSmsAction(params: {
   collectionId: string;
   templateId?: string;
   plotName?: string;
+  month?: string;
   customMessage?: string;
 }) {
   const session = await getSession();
@@ -1001,10 +1023,12 @@ export async function sendRecordInvoiceSmsAction(params: {
     fields,
     collection?.name,
     effectiveTemplateId,
-    effectivePlotName
+    effectivePlotName,
+    params.month,
+    params.customMessage
   );
 
-  const finalMessage = params.customMessage || payload.message;
+  const finalMessage = payload.message;
 
   if (!payload.phone) {
     const formatted = formatSmsFriendlyMessage('Empty phone number', {
@@ -1093,6 +1117,7 @@ export async function sendRecordsInvoiceSmsChunkAction(params: {
   collectionId: string;
   templateId?: string;
   plotName?: string;
+  month?: string;
   customMessage?: string;
 }) {
   const session = await getSession();
@@ -1138,10 +1163,12 @@ export async function sendRecordsInvoiceSmsChunkAction(params: {
       fields,
       collection?.name,
       effectiveTemplateId,
-      effectivePlotName
+      effectivePlotName,
+      params.month,
+      params.customMessage
     );
 
-    const message = params.customMessage || payload.message;
+    const message = payload.message;
 
     prepared.push({
       recordId: record._id.toString(),
@@ -1254,6 +1281,7 @@ export async function sendRecordsInvoiceSmsBulkAction(params: {
   collectionId: string;
   templateId?: string;
   plotName?: string;
+  month?: string;
   customMessage?: string;
 }) {
   const CHUNK_SIZE = 10;
@@ -1268,6 +1296,7 @@ export async function sendRecordsInvoiceSmsBulkAction(params: {
       collectionId: params.collectionId,
       templateId: params.templateId,
       plotName: params.plotName,
+      month: params.month,
       customMessage: params.customMessage,
     });
 
