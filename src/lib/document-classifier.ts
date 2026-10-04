@@ -77,7 +77,7 @@ export function detectDocumentType({
   collectionName?: string;
 }): DocumentClassificationResult {
   const normHeaders = headers.map((h) => String(h || '').trim().toUpperCase());
-  const upperName = (collectionName || '').trim().toUpperCase();
+  const upperName = String(collectionName || '').trim().toUpperCase();
 
   // Find matches
   const matchedRent = normHeaders.filter((h) => RENT_RECEIPT_INDICATORS.includes(h));

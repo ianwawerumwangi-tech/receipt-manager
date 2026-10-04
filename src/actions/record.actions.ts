@@ -331,10 +331,14 @@ export async function buildRecordSmsPayload(
   if (collectionId) {
     collDoc = await Collection.findById(collectionId).lean();
   } else if (collectionName) {
-    collDoc = { name: collectionName };
+    collDoc = typeof collectionName === 'object' && collectionName !== null
+      ? collectionName
+      : { name: String(collectionName) };
   }
-  const effectiveCollectionName = collectionName || collDoc?.name;
-  const resolvedType = explicitCollectionType || resolveCollectionType(collDoc, fields);
+  const effectiveCollectionName = typeof collectionName === 'object' && collectionName !== null
+    ? (collectionName as any).name
+    : collectionName || collDoc?.name;
+  const resolvedType = explicitCollectionType || (typeof collectionName === 'object' && (collectionName as any)?.type) || resolveCollectionType(collDoc, fields);
   const isWaterBill = resolvedType === 'water_bill';
 
   // Month

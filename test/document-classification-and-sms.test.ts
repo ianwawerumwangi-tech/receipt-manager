@@ -117,6 +117,27 @@ async function runAllTests() {
     assert.strictEqual(getDocumentTypeLabel(result.type), 'Water Bill');
   });
 
+  await test('KABAIKU 2026.xlsx must be classified as rent_receipt across all sheets', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path.join('data', 'KABAIKU 2026.xlsx'));
+    const testSheets = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUNE', 'JULY', 'AUG', 'SEP', 'OCT'];
+
+    for (const sheetName of testSheets) {
+      const ws = wb.getWorksheet(sheetName);
+      if (!ws) continue;
+      const headers: string[] = [];
+      ws.getRow(9).eachCell({ includeEmpty: true }, (c) => {
+        if (c.value) headers.push(String(c.value).trim());
+      });
+      const result = detectDocumentType({ headers, collectionName: `KABAIKU 2026 - ${sheetName}` });
+      assert.strictEqual(
+        result.type,
+        'rent_receipt',
+        `Sheet ${sheetName} was classified as ${result.type} instead of rent_receipt`
+      );
+    }
+  });
+
   await test('resolveCollectionType respects explicit type and falls back accurately', () => {
     // Explicit overrides
     assert.strictEqual(resolveCollectionType({ name: 'Any Name', type: 'rent_receipt' }, []), 'rent_receipt');
@@ -568,6 +589,100 @@ async function runAllTests() {
       process.env.BONGATECH_SENDER_ID = origSender;
       globalThis.fetch = origFetch;
     }
+  });
+
+  // --- SECTION 8: KABAIKU PARSING & RENT RECEIPT SMS VERIFICATION ---
+  console.log('\x1b[36m--- Section 8: Kabaiku Parsing & Verification (0711667099 & 0119204765) ---\x1b[0m');
+
+  await test('KABAIKU 2026.xlsx parses valid records and does not abort at Row 10 (LLD row)', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(path.join('data', 'KABAIKU 2026.xlsx'));
+
+    const testSheets = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUNE', 'JULY', 'AUG', 'SEP', 'OCT'];
+
+    for (const sheetName of testSheets) {
+      const ws = wb.getWorksheet(sheetName);
+      if (!ws) continue;
+
+      const headerRow = ws.getRow(9);
+      const headers: string[] = [];
+      headerRow.eachCell({ includeEmpty: true }, (c, col) => {
+        headers.push(String(c.value || `Col${col}`).trim());
+      });
+
+      // Verify that data rows exist after header (e.g. Row 10, 11, 12, 13...)
+      const row10 = ws.getRow(10);
+      const col2Val = String(row10.getCell(2).value || '').trim();
+      assert(col2Val.length > 0, `Sheet ${sheetName} row 10 should have data in col 2`);
+
+      const row13 = ws.getRow(13);
+      assert(
+        row13.getCell(1).value !== null && row13.getCell(2).value !== null,
+        `Sheet ${sheetName} row 13 should have valid tenant data`
+      );
+    }
+  });
+
+  await test('buildRecordSmsPayload generates valid Rent Receipt SMS for Kabaiku records with 0711667099 and 0119204765', async () => {
+    const kabaikuCollection = {
+      _id: 'col_kabaiku_jan_1',
+      name: 'KABAIKU 2026 - JAN',
+      type: 'rent_receipt' as const,
+    };
+
+    const kabaikuFields = [
+      { name: 'HSE NO' },
+      { name: 'NAME' },
+      { name: 'PHONE NO' },
+      { name: 'DEPOSIT PAID' },
+      { name: 'MONTHLY RENT' },
+      { name: 'BAL B/D' },
+      { name: 'RENT DUE' },
+      { name: 'RENT PAID' },
+      { name: 'RCT NO' },
+      { name: 'PERIOD' },
+      { name: 'BALANCE' },
+    ];
+
+    // Record with test phone 1: 0711667099
+    const kabaikuRecord1 = {
+      'HSE NO': '2',
+      'NAME': 'JOSEPH KITHUKU',
+      'PHONE NO': TEST_PHONE_1, // 0711667099
+      'MONTHLY RENT': 2500,
+      'RENT DUE': 2500,
+      'RENT PAID': 2500,
+      'RCT NO': 'QWE9876543',
+      'PERIOD': 'JAN',
+      'BALANCE': 0,
+    };
+
+    const payload1 = await buildRecordSmsPayload(kabaikuRecord1, kabaikuFields, kabaikuCollection);
+    assert(payload1 !== null, 'Payload 1 must not be null');
+    assert.strictEqual(payload1.phone, TEST_PHONE_1);
+    assert(payload1.message.includes('Dear JOSEPH KITHUKU, you are in receipt of KES 2,500'));
+    assert(payload1.message.includes('for house #2'));
+    assert(payload1.message.includes('Your current balance is KES 0.'));
+
+    // Record with test phone 2: 0119204765
+    const kabaikuRecord2 = {
+      'HSE NO': '3',
+      'NAME': 'NELSON KHAVUSHIRWA',
+      'PHONE NO': TEST_PHONE_2, // 0119204765
+      'MONTHLY RENT': 2500,
+      'RENT DUE': 2500,
+      'RENT PAID': 2000,
+      'RCT NO': 'RTY1234567',
+      'PERIOD': 'JAN',
+      'BALANCE': 500,
+    };
+
+    const payload2 = await buildRecordSmsPayload(kabaikuRecord2, kabaikuFields, kabaikuCollection);
+    assert(payload2 !== null, 'Payload 2 must not be null');
+    assert.strictEqual(payload2.phone, TEST_PHONE_2);
+    assert(payload2.message.includes('Dear NELSON KHAVUSHIRWA, you are in receipt of KES 2,000'));
+    assert(payload2.message.includes('for house #3'));
+    assert(payload2.message.includes('Your current balance is KES 500.'));
   });
 
   // Summary

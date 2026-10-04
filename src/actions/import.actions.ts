@@ -137,6 +137,50 @@ function findHeaderRow(sheet: ExcelJS.Worksheet): number {
   return 8; // fallback
 }
 
+function isSummaryOrFooterRow(row: ExcelJS.Row): boolean {
+  const summaryKeywords = [
+    'total', 'totals', 'grand total', 'sub total', 'subtotal',
+    'deduction', 'deductions', 'less ', 'less:', 'management fee',
+    'bal b/f', 'balance b/f', 'bal c/f', 'balance c/f',
+    'amount due', 'net due', 'net rent', 'authorise', 'authorized', 'authorised',
+    'prepared by', 'approved by', 'checked by'
+  ];
+
+  for (let c = 1; c <= Math.min(row.cellCount, 20); c++) {
+    const cellVal = row.getCell(c).value;
+    if (cellVal && typeof cellVal === 'string') {
+      const lower = cellVal.trim().toLowerCase();
+      if (summaryKeywords.some(kw => lower.startsWith(kw) || lower === kw || lower.includes('management fee'))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isPrecedingFormulaTotalsRow(row: ExcelJS.Row, headers: string[]): boolean {
+  let hasIdentifier = false;
+  let hasSumFormula = false;
+
+  headers.forEach((header, idx) => {
+    const upper = header.toUpperCase();
+    const isIdCol = upper.includes('HSE') || upper.includes('HOUSE') || upper.includes('NAME') || 
+                    upper.includes('TENANT') || upper.includes('CUSTOMER') || upper.includes('METER');
+    const cell = row.getCell(idx + 1);
+    const val = cell.value;
+    if (isIdCol && val !== null && val !== undefined && String(val).trim() !== '') {
+      hasIdentifier = true;
+    }
+    if (val && typeof val === 'object' && 'formula' in val) {
+      if (String((val as any).formula).toUpperCase().includes('SUM(')) {
+        hasSumFormula = true;
+      }
+    }
+  });
+
+  return !hasIdentifier && hasSumFormula;
+}
+
 export async function analyzeSpreadsheet(base64Data: string) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };
@@ -225,23 +269,34 @@ export async function getSpreadsheetPreview(
     let currentIdx = rowNum + 1;
     let previewCount = 0;
 
+    let consecutiveEmptyRows = 0;
+
     while (currentIdx <= sheet.rowCount && previewCount < maxPreview) {
       const row = sheet.getRow(currentIdx);
       
-      // Check if we should stop parsing (e.g. totals or empty row)
-      const firstCellVal = String(row.getCell(1).value || '').trim();
-      const lowerVal = firstCellVal.toLowerCase();
-      if (
-        !firstCellVal || 
-        lowerVal.startsWith('total') || 
-        lowerVal.startsWith('deduction') || 
-        lowerVal.startsWith('less') || 
-        lowerVal.startsWith('bal b/f') || 
-        lowerVal.startsWith('amount due') || 
-        lowerVal.startsWith('authorise')
-      ) {
+      // Stop condition: summary/totals or formula sum row
+      if (isSummaryOrFooterRow(row) || isPrecedingFormulaTotalsRow(row, headers)) {
         break;
       }
+
+      // Check if row has any non-empty cell
+      let hasAnyCellData = false;
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const v = cell.value;
+        if (v !== null && v !== undefined && String(v).trim() !== '') {
+          hasAnyCellData = true;
+        }
+      });
+
+      if (!hasAnyCellData) {
+        consecutiveEmptyRows++;
+        if (consecutiveEmptyRows >= 3) {
+          break;
+        }
+        currentIdx++;
+        continue;
+      }
+      consecutiveEmptyRows = 0;
 
       const rowData: Record<string, any> = {};
       let hasData = false;
@@ -369,24 +424,34 @@ export async function importSpreadsheet(data: {
       });
 
       let currentIdx = rowNum + 1;
+      let consecutiveEmptyRows = 0;
 
       while (currentIdx <= sheet.rowCount) {
         const row = sheet.getRow(currentIdx);
         
-        // Stop condition
-        const firstCellVal = String(row.getCell(1).value || '').trim();
-        const lowerVal = firstCellVal.toLowerCase();
-        if (
-          !firstCellVal || 
-          lowerVal.startsWith('total') || 
-          lowerVal.startsWith('deduction') || 
-          lowerVal.startsWith('less') || 
-          lowerVal.startsWith('bal b/f') || 
-          lowerVal.startsWith('amount due') || 
-          lowerVal.startsWith('authorise')
-        ) {
+        // Stop condition: summary/totals or formula sum row
+        if (isSummaryOrFooterRow(row) || isPrecedingFormulaTotalsRow(row, headers)) {
           break;
         }
+
+        // Check if row has any non-empty cell
+        let hasAnyCellData = false;
+        row.eachCell({ includeEmpty: false }, (cell) => {
+          const v = cell.value;
+          if (v !== null && v !== undefined && String(v).trim() !== '') {
+            hasAnyCellData = true;
+          }
+        });
+
+        if (!hasAnyCellData) {
+          consecutiveEmptyRows++;
+          if (consecutiveEmptyRows >= 3) {
+            break;
+          }
+          currentIdx++;
+          continue;
+        }
+        consecutiveEmptyRows = 0;
 
         const rowValues: Record<string, any> = {};
         headers.forEach((header, index) => {
@@ -405,12 +470,11 @@ export async function importSpreadsheet(data: {
           }
           if (excelHeader === '__sheet_name__') {
             recordData[fieldName] = currentSheetName;
-            hasMappedData = true;
             continue;
           }
 
           const excelValue = rowValues[excelHeader];
-          if (excelValue !== null && excelValue !== undefined) {
+          if (excelValue !== null && excelValue !== undefined && String(excelValue).trim() !== '') {
             recordData[fieldName] = excelValue;
             hasMappedData = true;
           }

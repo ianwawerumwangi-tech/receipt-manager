@@ -92,12 +92,25 @@ export function extractRecordInstallments(
 ): { amount: number; rct: string }[] {
   if (!recordData) return [];
 
-  const amountField = fields.find((f) =>
-    ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase())
-  );
-  const rctField = fields.find((f) =>
-    ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(f.name.toUpperCase())
-  );
+  const amountCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'TOTAL PAID', 'TOTAL AMOUNT', 'PAID', 'DEPOSIT PAID'];
+  let amountField: { name: string; type?: string } | undefined;
+  for (const candidate of amountCandidates) {
+    const found = fields.find((f) => f.name.trim().toUpperCase() === candidate);
+    if (found) {
+      amountField = found;
+      break;
+    }
+  }
+
+  const rctCandidates = ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'];
+  let rctField: { name: string; type?: string } | undefined;
+  for (const candidate of rctCandidates) {
+    const found = fields.find((f) => f.name.trim().toUpperCase() === candidate);
+    if (found) {
+      rctField = found;
+      break;
+    }
+  }
 
   const rctVal = String(rctField ? recordData[rctField.name] || '' : '').trim();
   const amountVal = amountField ? recordData[amountField.name] : undefined;
