@@ -21,11 +21,20 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   createCollection,
   deleteCollection,
 } from '@/actions/collection.actions';
-import { Plus, Trash2, FolderOpen, FileText } from 'lucide-react';
+import { getDocumentTypeLabel, resolveCollectionType, DocumentType } from '@/lib/document-classifier';
+import { Plus, Trash2, FolderOpen, FileText, Droplets, Receipt, FileCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { ImportDialog } from './ImportDialog';
@@ -34,6 +43,7 @@ interface CollectionItem {
   _id: string;
   name: string;
   description?: string;
+  type?: 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
   fieldCount: number;
   recordCount: number;
 }
@@ -45,16 +55,24 @@ export function CollectionsClient({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', description: '' });
+  const [form, setForm] = useState<{ name: string; description: string; type: DocumentType }>({
+    name: '',
+    description: '',
+    type: 'rent_receipt',
+  });
   const [deleteTarget, setDeleteTarget] = useState<CollectionItem | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) return;
-    const res = await createCollection({ name: form.name, description: form.description });
+    const res = await createCollection({
+      name: form.name,
+      description: form.description,
+      type: form.type,
+    });
     if (res.success) {
       toast.success('Collection created');
-      setForm({ name: '', description: '' });
+      setForm({ name: '', description: '', type: 'rent_receipt' });
       setOpen(false);
       router.refresh();
     }
@@ -68,6 +86,32 @@ export function CollectionsClient({
       setDeleteTarget(null);
       router.refresh();
     }
+  };
+
+  const getCollectionBadge = (type?: string, name?: string) => {
+    const resolved = resolveCollectionType({ type, name });
+    if (resolved === 'water_bill') {
+      return (
+        <Badge variant="outline" className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 gap-1 text-[11px] font-medium">
+          <Droplets className="h-3 w-3" />
+          Water Bill
+        </Badge>
+      );
+    }
+    if (resolved === 'invoice') {
+      return (
+        <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 gap-1 text-[11px] font-medium">
+          <FileCheck className="h-3 w-3" />
+          Invoices
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 gap-1 text-[11px] font-medium">
+        <Receipt className="h-3 w-3" />
+        Rent Receipts
+      </Badge>
+    );
   };
 
   return (
@@ -87,9 +131,26 @@ export function CollectionsClient({
                   id="name"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="e.g. Inventory, Employee Records"
+                  placeholder="e.g. Anita Jan Receipts"
                   required
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="type">Collection Type</Label>
+                <Select
+                  value={form.type}
+                  onValueChange={(val) => { if (val) setForm({ ...form, type: val as DocumentType }); }}
+                >
+                  <SelectTrigger id="type">
+                    <SelectValue placeholder="Select collection type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="rent_receipt">Rent Receipts (Rent payments & receipts)</SelectItem>
+                    <SelectItem value="water_bill">Water Bill (Meter readings & consumption)</SelectItem>
+                    <SelectItem value="invoice">Invoices (Rent due notices)</SelectItem>
+                    <SelectItem value="general">General</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="desc">Description (optional)</Label>
@@ -120,8 +181,11 @@ export function CollectionsClient({
             <Card key={collection._id}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-lg">{collection.name}</CardTitle>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <CardTitle className="text-lg">{collection.name}</CardTitle>
+                      {getCollectionBadge(collection.type, collection.name)}
+                    </div>
                     {collection.description && (
                       <CardDescription className="mt-1">
                         {collection.description}

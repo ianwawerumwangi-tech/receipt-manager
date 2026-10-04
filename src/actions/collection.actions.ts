@@ -34,7 +34,11 @@ export async function getCollections() {
   return serialize(result);
 }
 
-export async function createCollection(data: { name: string; description?: string }) {
+export async function createCollection(data: {
+  name: string;
+  description?: string;
+  type?: 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
+}) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };
 
@@ -42,6 +46,7 @@ export async function createCollection(data: { name: string; description?: strin
   const collection = await Collection.create({
     name: data.name,
     description: data.description || '',
+    type: data.type || 'rent_receipt',
     createdBy: session.userId,
   });
 
@@ -51,7 +56,13 @@ export async function createCollection(data: { name: string; description?: strin
 
 export async function updateCollection(
   id: string,
-  data: { name?: string; description?: string; defaultInvoiceTemplateId?: string; plotName?: string }
+  data: {
+    name?: string;
+    description?: string;
+    type?: 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
+    defaultInvoiceTemplateId?: string;
+    plotName?: string;
+  }
 ) {
   const session = await getSession();
   if (!session) return { error: 'Unauthorized' };

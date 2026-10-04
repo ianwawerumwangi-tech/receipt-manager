@@ -65,6 +65,9 @@ import {
   Loader2,
   MessageSquare,
   BellRing,
+  Droplets,
+  Receipt,
+  FileCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -72,6 +75,7 @@ import Link from 'next/link';
 import { ImportDialog } from '../ImportDialog';
 import { SendInvoiceDialog } from './SendInvoiceDialog';
 import { extractRecordInstallments } from '@/lib/utils';
+import { resolveCollectionType, DocumentType } from '@/lib/document-classifier';
 
 type FieldType = 'text' | 'number' | 'date' | 'boolean' | 'textarea' | 'email' | 'phone' | 'relation';
 
@@ -79,6 +83,7 @@ interface CollectionItem {
   _id: string;
   name: string;
   description?: string;
+  type?: 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
   fieldCount: number;
   recordCount: number;
   defaultInvoiceTemplateId?: string;
@@ -156,8 +161,20 @@ export function CollectionViewClient({
   const [recordForm, setRecordForm] = useState<Record<string, unknown>>({});
   const [relationRecords, setRelationRecords] = useState<Record<string, { _id: string; data: Record<string, unknown> }[]>>({});
 
+  const collectionType = useMemo(() => {
+    return resolveCollectionType(collection, fields);
+  }, [collection, fields]);
+
   const [editNameOpen, setEditNameOpen] = useState(false);
-  const [nameForm, setNameForm] = useState({ name: collection.name, description: collection.description || '' });
+  const [nameForm, setNameForm] = useState<{
+    name: string;
+    description: string;
+    type: DocumentType;
+  }>({
+    name: collection.name,
+    description: collection.description || '',
+    type: collection.type || collectionType,
+  });
   const [deleteFieldTarget, setDeleteFieldTarget] = useState<FieldItem | null>(null);
   const [deleteRecordTarget, setDeleteRecordTarget] = useState<RecordItem | null>(null);
 
@@ -401,11 +418,13 @@ export function CollectionViewClient({
     // 2. Rent auto-calculations when RENT PAID changes
     const rentPaidF = fields.find((f) => ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID'].includes(f.name.toUpperCase()));
     const balanceF = fields.find((f) => ['BALANCE', 'BAL', 'CURRENT BALANCE'].includes(f.name.toUpperCase()));
+    const rentDueF = fields.find((f) => ['RENT DUE', 'TOTAL DUE'].includes(f.name.toUpperCase()));
+    const dueField = rentDueF || totalBillF;
 
     if (rentPaidF && balanceF && upperFieldName === rentPaidF.name.toUpperCase()) {
       const rentPaid = parseMathExpression(val);
-      if (totalBillF && updatedRow[totalBillF.name] !== undefined) {
-        const total = parseMathExpression(updatedRow[totalBillF.name]);
+      if (dueField && updatedRow[dueField.name] !== undefined) {
+        const total = parseMathExpression(updatedRow[dueField.name]);
         updatedRow[balanceF.name] = total - rentPaid;
       }
     }
@@ -917,8 +936,24 @@ export function CollectionViewClient({
           </Button>
         </Link>
         <div className="flex-1">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-3xl font-bold">{collection.name}</h1>
+            {collectionType === 'water_bill' ? (
+              <Badge variant="outline" className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 gap-1 text-xs font-medium">
+                <Droplets className="h-3 w-3" />
+                Water Bill
+              </Badge>
+            ) : collectionType === 'invoice' ? (
+              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 gap-1 text-xs font-medium">
+                <FileCheck className="h-3 w-3" />
+                Invoices
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 gap-1 text-xs font-medium">
+                <Receipt className="h-3 w-3" />
+                Rent Receipts
+              </Badge>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setEditNameOpen(true)}>
               <Pencil className="h-3.5 w-3.5" />
             </Button>
@@ -994,10 +1029,12 @@ export function CollectionViewClient({
                         variant="default"
                         onClick={handleBulkSendSms}
                         disabled={sendingSmsBulk}
-                        className="bg-green-600 hover:bg-green-700 text-white"
+                        className={collectionType === 'water_bill' ? "bg-sky-600 hover:bg-sky-700 text-white" : "bg-green-600 hover:bg-green-700 text-white"}
                       >
                         {sendingSmsBulk && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-                        Send SMS ({selectedRecordIds.length})
+                        {collectionType === 'water_bill'
+                          ? `Send Water Bills (${selectedRecordIds.length})`
+                          : `Send Rent Receipts (${selectedRecordIds.length})`}
                       </Button>
                     )}
                     <Button
@@ -1139,10 +1176,14 @@ export function CollectionViewClient({
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  title="Send Receipt SMS"
+                                  title={collectionType === 'water_bill' ? "Send Water Bill SMS" : "Send Rent Receipt SMS"}
                                   onClick={() => handleSmsButtonClick(record)}
                                 >
-                                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                                  {collectionType === 'water_bill' ? (
+                                    <Droplets className="h-3.5 w-3.5 text-sky-600" />
+                                  ) : (
+                                    <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                                  )}
                                 </Button>
                                 <Button
                                   variant="ghost"
@@ -1209,6 +1250,23 @@ export function CollectionViewClient({
                 onChange={(e) => setNameForm({ ...nameForm, name: e.target.value })}
                 required
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editType">Collection Type</Label>
+              <Select
+                value={nameForm.type}
+                onValueChange={(val) => { if (val) setNameForm({ ...nameForm, type: val as DocumentType }); }}
+              >
+                <SelectTrigger id="editType">
+                  <SelectValue placeholder="Select collection type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="rent_receipt">Rent Receipts (Rent payments & receipts)</SelectItem>
+                  <SelectItem value="water_bill">Water Bill (Meter readings & consumption)</SelectItem>
+                  <SelectItem value="invoice">Invoices (Rent due notices)</SelectItem>
+                  <SelectItem value="general">General</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="editDesc">Description (optional)</Label>

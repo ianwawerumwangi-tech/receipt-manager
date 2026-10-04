@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth';
 import { findLatestMonthSheet } from '@/lib/utils';
 import { bulkLookupTenantPhones } from '@/actions/customer.actions';
 import { logAppEvent } from '@/lib/logger';
+import { detectDocumentType, getDocumentTypeLabel } from '@/lib/document-classifier';
 
 // Evaluates formulas dynamically
 function evaluateCell(sheet: ExcelJS.Worksheet, cell: ExcelJS.Cell, workbook?: ExcelJS.Workbook): any {
@@ -150,12 +151,34 @@ export async function analyzeSpreadsheet(base64Data: string) {
     const latestSheet = firstSheet || findLatestMonthSheet(sheets);
     
     let detectedHeaderRow = 8;
+    let detectedType = 'rent_receipt';
+    let classificationReason = '';
+
     if (workbook.worksheets.length > 0) {
       const targetSheet = workbook.getWorksheet(firstSheet) || workbook.worksheets.find(s => !s.name.toLowerCase().includes('summary') && !s.name.toLowerCase().includes('total')) || workbook.worksheets[0];
       detectedHeaderRow = findHeaderRow(targetSheet);
+
+      const headerRow = targetSheet.getRow(detectedHeaderRow);
+      const headers: string[] = [];
+      headerRow.eachCell({ includeEmpty: true }, (cell) => {
+        const val = cell.value;
+        if (typeof val === 'string') headers.push(val.trim());
+        else if (typeof val === 'number') headers.push(String(val));
+      });
+
+      const classification = detectDocumentType({ headers, collectionName: firstSheet });
+      detectedType = classification.type;
+      classificationReason = classification.reason;
     }
 
-    return { sheets, detectedHeaderRow, latestSheet };
+    return {
+      sheets,
+      detectedHeaderRow,
+      latestSheet,
+      detectedType,
+      detectedTypeLabel: getDocumentTypeLabel(detectedType),
+      classificationReason,
+    };
   } catch (error: any) {
     return { error: error.message || 'Failed to read spreadsheet' };
   }
@@ -627,6 +650,7 @@ export async function importSpreadsheet(data: {
 export async function importNewCollection(data: {
   name: string;
   description?: string;
+  type?: 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
   base64Data: string;
   sheetName: string;
   headerRowNumber: number;
@@ -658,10 +682,17 @@ export async function importNewCollection(data: {
         ? `${baseName} - ${currentSheetName}`
         : data.name;
 
+      const detected = detectDocumentType({
+        headers: data.fields.map(f => f.name),
+        collectionName,
+      });
+      const collectionType = data.type || detected.type;
+
       // 1. Create the Collection
       const collection = await Collection.create({
         name: collectionName,
         description: data.description || `Imported from sheet ${currentSheetName}`,
+        type: collectionType,
         createdBy: session.userId,
       });
 

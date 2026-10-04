@@ -50,10 +50,13 @@ export type DashboardData = {
   recentPayments: IPayment[];
 };
 
+export type CollectionType = 'rent_receipt' | 'water_bill' | 'invoice' | 'general';
+
 export interface ICollection {
   _id: string;
   name: string;
   description?: string;
+  type?: CollectionType;
   createdBy: string;
   createdAt: Date;
   fieldCount?: number;

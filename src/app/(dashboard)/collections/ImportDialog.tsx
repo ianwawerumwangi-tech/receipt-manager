@@ -71,6 +71,8 @@ export function ImportDialog({
   const [existingCollections, setExistingCollections] = useState<{ _id: string; name: string }[]>([]);
   const [targetCollectionType, setTargetCollectionType] = useState<string>('__new__'); // '__new__' or existing collection ID
   const [newCollectionName, setNewCollectionName] = useState<string>('');
+  const [docType, setDocType] = useState<'rent_receipt' | 'water_bill' | 'invoice' | 'general'>('rent_receipt');
+  const [detectedTypeLabel, setDetectedTypeLabel] = useState<string>('Rent Receipts');
   const [dynFields, setDynFields] = useState<FieldItem[]>([]);
   
   // Preview / Mapping states
@@ -149,6 +151,10 @@ export function ImportDialog({
         setSheets(res.sheets || []);
         if (res.detectedHeaderRow !== undefined) {
           setHeaderRow(res.detectedHeaderRow);
+        }
+        if (res.detectedType) {
+          setDocType(res.detectedType as any);
+          setDetectedTypeLabel(res.detectedTypeLabel || 'Rent Receipts');
         }
         if (res.sheets && res.sheets.length > 0) {
           const defaultSheet = res.sheets[0] || res.latestSheet;
@@ -291,6 +297,7 @@ export function ImportDialog({
 
         const res = await importNewCollection({
           name: newCollectionName,
+          type: docType,
           base64Data,
           sheetName: selectedSheet,
           headerRowNumber: headerRow,
@@ -360,6 +367,8 @@ export function ImportDialog({
     setPreviewRows([]);
     setMappings({});
     setNewFieldsToCreate({});
+    setDocType('rent_receipt');
+    setDetectedTypeLabel('Rent Receipts');
     if (!collectionId) {
       setTargetCollectionType('__new__');
       setDynFields([]);
@@ -437,16 +446,37 @@ export function ImportDialog({
                   </Select>
                 </div>
                 {targetCollectionType === '__new__' ? (
-                  <div className="space-y-1.5">
-                    <Label htmlFor="new-col-name" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">New Collection Name</Label>
-                    <Input
-                      id="new-col-name"
-                      value={newCollectionName}
-                      onChange={(e) => setNewCollectionName(e.target.value)}
-                      className="bg-background"
-                      placeholder="e.g. Anita Jan Receipts"
-                    />
-                  </div>
+                  <>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="new-col-name" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">New Collection Name</Label>
+                      <Input
+                        id="new-col-name"
+                        value={newCollectionName}
+                        onChange={(e) => setNewCollectionName(e.target.value)}
+                        className="bg-background"
+                        placeholder="e.g. Anita Jan Receipts"
+                      />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Document / Collection Type</Label>
+                        <Badge variant="outline" className="text-[10px] py-0 border-primary/30 text-primary">
+                          Detected: {detectedTypeLabel}
+                        </Badge>
+                      </div>
+                      <Select value={docType} onValueChange={(val: any) => { if (val) setDocType(val); }}>
+                        <SelectTrigger className="bg-background">
+                          <SelectValue placeholder="Select collection type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="rent_receipt">Rent Receipts (Rent payments & receipts)</SelectItem>
+                          <SelectItem value="water_bill">Water Bill (Meter readings & consumption)</SelectItem>
+                          <SelectItem value="invoice">Invoices (Rent due notices)</SelectItem>
+                          <SelectItem value="general">General</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
                 ) : (
                   <div className="space-y-1.5 flex items-end">
                     <span className="text-xs text-muted-foreground pb-2">

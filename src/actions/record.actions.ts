@@ -17,6 +17,7 @@ import {
   extractPlotNameFromCollection,
   resolveInvoiceMessage,
 } from '@/lib/invoice-templates';
+import { resolveCollectionType } from '@/lib/document-classifier';
 
 function parseMathExpression(val: any): number {
   if (val === null || val === undefined) return 0;
@@ -297,12 +298,13 @@ export async function updateRecordsBulk(
   return { success: true };
 }
 
-async function buildRecordSmsPayload(
+export async function buildRecordSmsPayload(
   recordDataObj: Record<string, any>,
   fields: any[],
   collectionName?: string,
   collectionId?: string,
-  cachedRate?: number
+  cachedRate?: number,
+  explicitCollectionType?: string
 ) {
   // Name
   const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
@@ -324,19 +326,25 @@ async function buildRecordSmsPayload(
     }
   }
 
-  // Check if collection is a Water Bill collection based on fields or name
-  const isWaterBill = fields.some(f => 
-    ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
-  ) || (collectionName && collectionName.toUpperCase().includes('WATER'));
+  // Determine if collection is a Water Bill collection based on explicit type or robust schema detection
+  let collDoc: any = null;
+  if (collectionId) {
+    collDoc = await Collection.findById(collectionId).lean();
+  } else if (collectionName) {
+    collDoc = { name: collectionName };
+  }
+  const effectiveCollectionName = collectionName || collDoc?.name;
+  const resolvedType = explicitCollectionType || resolveCollectionType(collDoc, fields);
+  const isWaterBill = resolvedType === 'water_bill';
 
   // Month
   const monthFieldCandidates = ['MONTH OF RECEIPT', 'PERIOD', 'MONTH', 'FOR MONTH', 'FOR THE MONTH OF', 'RECEIPT MONTH', 'BILL MONTH'];
   const monthField = findFieldByPriority(fields, monthFieldCandidates);
   let monthStr = String(recordDataObj[monthField?.name || ''] || '').trim();
 
-  if (!monthStr && collectionName) {
+  if (!monthStr && effectiveCollectionName) {
     const months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const upperColl = collectionName.toUpperCase();
+    const upperColl = effectiveCollectionName.toUpperCase();
     for (const m of months) {
       if (upperColl.includes(m)) {
         const yearMatch = upperColl.match(/20\d\d/);
@@ -345,7 +353,7 @@ async function buildRecordSmsPayload(
       }
     }
     if (!monthStr) {
-      monthStr = collectionName;
+      monthStr = effectiveCollectionName;
     }
   }
 
@@ -684,10 +692,8 @@ export async function sendRecordsSmsChunkAction(recordIds: string[], collectionI
 
   // Pre-resolve water unit rate for water bill collections
   let cachedRate: number | undefined;
-  const isWaterBill =
-    fields.some((f) =>
-      ['PREVIOUS', 'PREV', 'CURRENT', 'CURR', 'CONSUMPTION', 'WATER BILL', 'TOTAL BILL'].includes(f.name.toUpperCase())
-    ) || (collection?.name && collection.name.toUpperCase().includes('WATER'));
+  const resolvedType = resolveCollectionType(collection, fields);
+  const isWaterBill = resolvedType === 'water_bill';
 
   if (isWaterBill) {
     const sampleRecord = await Record.findOne({
