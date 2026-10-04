@@ -36,7 +36,7 @@ export function RecentPayments({ payments }: { payments: IPayment[] }) {
               <TableRow key={payment._id}>
                 <TableCell className="font-mono text-xs">{payment.receiptNumber}</TableCell>
                 <TableCell>{payment.customer?.name || 'N/A'}</TableCell>
-                <TableCell>KES {payment.amount.toLocaleString()}</TableCell>
+                <TableCell>KES {((typeof payment.amount === 'number' && !isNaN(payment.amount) && isFinite(payment.amount)) ? payment.amount : (Number(payment.amount) || 0)).toLocaleString()}</TableCell>
                 <TableCell>
                   <Badge
                     variant={

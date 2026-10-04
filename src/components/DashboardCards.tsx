@@ -15,7 +15,7 @@ export function DashboardCards({ data }: { data: DashboardData }) {
     },
     {
       title: "Today's Revenue",
-      value: `KES ${data.todayRevenue.toLocaleString()}`,
+      value: `KES ${((typeof data.todayRevenue === 'number' && !isNaN(data.todayRevenue) && isFinite(data.todayRevenue)) ? data.todayRevenue : (Number(data.todayRevenue) || 0)).toLocaleString()}`,
       icon: IndianRupee,
       color: 'text-green-600',
       bg: 'bg-green-50',

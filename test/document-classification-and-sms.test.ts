@@ -22,6 +22,7 @@ import {
   getInvoiceTemplate,
   resolveInvoiceMessage,
 } from '../src/lib/invoice-templates';
+import { parseMathExpression } from '../src/lib/utils';
 
 const TEST_PHONE_1 = '0711667099';
 const TEST_PHONE_2 = '0119204765';
@@ -683,6 +684,63 @@ async function runAllTests() {
     assert(payload2.message.includes('Dear NELSON KHAVUSHIRWA, you are in receipt of KES 2,000'));
     assert(payload2.message.includes('for house #3'));
     assert(payload2.message.includes('Your current balance is KES 500.'));
+  });
+
+  // --- SECTION 9: DASHBOARD REVENUE CALCULATION & NAN PREVENTION ---
+  console.log('\x1b[36m--- Section 9: Dashboard Revenue Calculation & NaN Prevention ---\x1b[0m');
+
+  await test('parseMathExpression safely parses messy Excel values and never returns NaN', () => {
+    // Normal numbers
+    assert.strictEqual(parseMathExpression(2500), 2500);
+    assert.strictEqual(parseMathExpression(0), 0);
+    assert.strictEqual(parseMathExpression(-500), -500);
+
+    // Number strings with commas
+    assert.strictEqual(parseMathExpression('10,000'), 10000);
+    assert.strictEqual(parseMathExpression('  2,500  '), 2500);
+
+    // Math expressions in strings
+    assert.strictEqual(parseMathExpression('2500+2500'), 5000);
+    assert.strictEqual(parseMathExpression('2000 + 1000 + 500'), 3500);
+
+    // Objects with formula results
+    assert.strictEqual(parseMathExpression({ formula: 'H32*10%', result: 3990 }), 3990);
+    assert.strictEqual(parseMathExpression({ formula: 'D3-E3', result: '150' }), 150);
+
+    // Non-numeric or empty strings (MUST return 0, NEVER NaN)
+    assert.strictEqual(parseMathExpression('VACANT'), 0);
+    assert.strictEqual(parseMathExpression('-'), 0);
+    assert.strictEqual(parseMathExpression('N/A'), 0);
+    assert.strictEqual(parseMathExpression(''), 0);
+    assert.strictEqual(parseMathExpression(null), 0);
+    assert.strictEqual(parseMathExpression(undefined), 0);
+  });
+
+  await test('Dashboard revenue aggregation never results in NaN even with dirty Excel records', () => {
+    // Simulate dirty data from various spreadsheet columns
+    const testRecords = [
+      { 'RENT PAID': '2500+2500' },               // math expression string -> 5000
+      { 'RENT PAID': 2500 },                      // number -> 2500
+      { 'RENT PAID': '10,000' },                  // comma string -> 10000
+      { 'RENT PAID': { result: 3000 } },          // formula result object -> 3000
+      { 'RENT PAID': 'VACANT' },                  // non-numeric string -> 0
+      { 'RENT PAID': null },                      // null -> 0
+      { 'RENT PAID': undefined },                 // undefined -> 0
+      { 'RENT PAID': '-' },                       // dash -> 0
+    ];
+
+    let totalRevenue = 0;
+    for (const rec of testRecords) {
+      const amount = parseMathExpression(rec['RENT PAID']);
+      assert(!isNaN(amount), `Amount should not be NaN for ${JSON.stringify(rec)}`);
+      assert(isFinite(amount), `Amount should be finite for ${JSON.stringify(rec)}`);
+      totalRevenue += amount;
+    }
+
+    assert.strictEqual(totalRevenue, 20500);
+    assert(!isNaN(totalRevenue));
+    assert(!totalRevenue.toLocaleString().includes('NaN'));
+    assert.strictEqual(`KES ${totalRevenue.toLocaleString()}`, 'KES 20,500');
   });
 
   // Summary

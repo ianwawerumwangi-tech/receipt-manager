@@ -4,7 +4,7 @@ import { Customer } from '@/models/Customer';
 import { SmsLog } from '@/models/SmsLog';
 import { Record as RecordModel } from '@/models/Record';
 import { buildSmsTemplate, sendSms } from '@/lib/sms';
-import { serialize } from '@/lib/utils';
+import { serialize, parseMathExpression } from '@/lib/utils';
 
 async function generateUniqueReceiptNumber(): Promise<string> {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -138,17 +138,19 @@ export async function getDashboardData() {
   const getRecordValue = (data: any, patterns: string[]) => {
     const obj = data instanceof Map ? Object.fromEntries(data) : (data as Record<string, any>);
     if (!obj) return null;
-    for (const key of Object.keys(obj)) {
-      if (patterns.includes(key.trim().toUpperCase())) {
-        return obj[key];
+    const keys = Object.keys(obj);
+    for (const pattern of patterns) {
+      const matchedKey = keys.find((k) => k.trim().toUpperCase() === pattern.toUpperCase());
+      if (matchedKey && obj[matchedKey] !== null && obj[matchedKey] !== undefined && String(obj[matchedKey]).trim() !== '') {
+        return obj[matchedKey];
       }
     }
     return null;
   };
 
   const rctPatterns = ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT', 'RCT'];
-  const namePatterns = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'CLIENT NAME'];
-  const amountPatterns = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID', 'PAID'];
+  const namePatterns = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'CLIENT NAME', 'TENANT'];
+  const amountPatterns = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'TOTAL PAID', 'TOTAL AMOUNT', 'TOTAL BILL', 'WATER BILL', 'PAID', 'DEPOSIT PAID'];
   const smsPatterns = ['SMS STATUS', 'SMS_STATUS', 'SMS STATUS ', 'SMS', 'STATUS'];
 
   let totalPaymentsCount = 0;
@@ -162,7 +164,9 @@ export async function getDashboardData() {
     const data = r.data;
     const rct = getRecordValue(data, rctPatterns);
     const name = getRecordValue(data, namePatterns) || 'N/A';
-    const amount = Number(getRecordValue(data, amountPatterns) || 0);
+    const rawAmount = getRecordValue(data, amountPatterns);
+    const parsedAmount = parseMathExpression(rawAmount);
+    const amount = (!isNaN(parsedAmount) && isFinite(parsedAmount)) ? parsedAmount : 0;
     const smsVal = getRecordValue(data, smsPatterns);
     const sms = String(smsVal || 'pending').toLowerCase();
 
@@ -190,7 +194,9 @@ export async function getDashboardData() {
 
   for (const p of directPayments) {
     totalPaymentsCount++;
-    totalRevenue += p.amount || 0;
+    const pAmount = parseMathExpression(p.amount);
+    const safeAmount = (!isNaN(pAmount) && isFinite(pAmount)) ? pAmount : 0;
+    totalRevenue += safeAmount;
     const sms = String(p.smsStatus || 'pending').toLowerCase();
     if (sms === 'sent') {
       smsSent++;
@@ -202,7 +208,7 @@ export async function getDashboardData() {
       _id: p._id.toString(),
       receiptNumber: p.receiptNumber || 'N/A',
       customer: { name: p.customer?.name || 'N/A' },
-      amount: p.amount || 0,
+      amount: safeAmount,
       smsStatus: sms,
       createdAt: p.createdAt,
       updatedAt: (p as any).updatedAt || p.createdAt,
@@ -213,7 +219,7 @@ export async function getDashboardData() {
 
   return {
     todayPayments: totalPaymentsCount,
-    todayRevenue: totalRevenue,
+    todayRevenue: (!isNaN(totalRevenue) && isFinite(totalRevenue)) ? totalRevenue : 0,
     smsSent,
     smsFailed,
     recentPayments: serialize(mappedPayments.slice(0, 10)),

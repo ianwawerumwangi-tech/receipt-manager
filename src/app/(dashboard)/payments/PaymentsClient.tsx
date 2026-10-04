@@ -74,7 +74,7 @@ export function PaymentsClient({ payments: initial }: { payments: IPayment[] }) 
                   </TableCell>
                   <TableCell>{payment.customer?.name || 'N/A'}</TableCell>
                   <TableCell>{payment.customer?.phone || 'N/A'}</TableCell>
-                  <TableCell>KES {payment.amount.toLocaleString()}</TableCell>
+                  <TableCell>KES {((typeof payment.amount === 'number' && !isNaN(payment.amount) && isFinite(payment.amount)) ? payment.amount : (Number(payment.amount) || 0)).toLocaleString()}</TableCell>
                   <TableCell className="text-xs">{payment.reference || '-'}</TableCell>
                   <TableCell>
                     <Badge
