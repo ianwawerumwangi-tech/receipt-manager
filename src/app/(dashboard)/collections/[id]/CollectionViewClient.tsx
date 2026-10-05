@@ -733,20 +733,25 @@ export function CollectionViewClient({
       const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
       let amounts: number[] = [];
       if (typeof amountVal === 'string' && amountVal.includes('+')) {
-        amounts = amountVal.split('+').map(p => Number(p.trim())).filter(p => !isNaN(p));
+        amounts = amountVal.split('+').map(p => Number(p.replace(/,/g, '').trim())).filter(p => !isNaN(p));
       } else if (typeof amountVal === 'number') {
         amounts = [amountVal];
       }
-      if (amounts.length > 0 || rcts.length > 1) {
+      if (amounts.length > 1) {
         const installmentsList = [];
         const count = Math.max(amounts.length, rcts.length);
         for (let i = 0; i < count; i++) {
           installmentsList.push({
-            amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
-            rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
+            amount: amounts[i] ?? 0,
+            rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : (rcts[0] || '')),
           });
         }
         updatedForm['_installments'] = installmentsList;
+      } else if (amounts.length === 1 && rcts.length > 1) {
+        updatedForm['_installments'] = [{
+          amount: amounts[0],
+          rct: rcts.join(' / '),
+        }];
       } else {
         delete updatedForm['_installments'];
       }

@@ -304,7 +304,8 @@ export async function buildRecordSmsPayload(
   collectionName?: string,
   collectionId?: string,
   cachedRate?: number,
-  explicitCollectionType?: string
+  explicitCollectionType?: string,
+  selectedInstallment?: { amount: number; rct: string }
 ) {
   // Name
   const nameFieldCandidates = ['NAME', 'CUSTOMER NAME', 'CUSTOMER', 'TENANT', 'CLIENT NAME', 'CLIENT'];
@@ -472,12 +473,37 @@ export async function buildRecordSmsPayload(
 
   const installments = extractRecordInstallments(recordDataObj, fields);
   let totalAmount = 0;
-  if (installments.length > 0) {
-    totalAmount = installments.reduce((sum, inst) => sum + (Number(inst.amount) || 0), 0);
+
+  // Strict primary candidate list: rent & general payments take absolute precedence over deposits
+  const amountFieldCandidates = [
+    'RENT PAID',
+    'AMOUNT PAID',
+    'TOTAL PAID',
+    'PAID',
+    'AMOUNT',
+    'TOTAL AMOUNT',
+    'MONTHLY RENT',
+  ];
+  let amountField = findFieldByPriority(fields, amountFieldCandidates);
+  if (!amountField) {
+    // Only fall back to deposit columns if NO rent or payment columns exist in the collection schema
+    amountField = findFieldByPriority(fields, ['DEPOSIT PAID', 'DEPOSIT']);
+  }
+  const authoritativeAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+
+  if (selectedInstallment && typeof selectedInstallment.amount === 'number' && selectedInstallment.amount > 0) {
+    totalAmount = selectedInstallment.amount;
+  } else if (installments.length > 0) {
+    const instSum = installments.reduce((sum, inst) => sum + (Number(inst.amount) || 0), 0);
+    // If the sum of installments diverges from the actual amount field in the table,
+    // the table's amount field is authoritative to prevent doubling or stale installments
+    if (authoritativeAmount > 0 && Math.abs(instSum - authoritativeAmount) > 0.01) {
+      totalAmount = authoritativeAmount;
+    } else {
+      totalAmount = instSum > 0 ? instSum : authoritativeAmount;
+    }
   } else {
-    const amountFieldCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'DEPOSIT PAID', 'PAID', 'TOTAL PAID', 'TOTAL AMOUNT'];
-    const amountField = findFieldByPriority(fields, amountFieldCandidates);
-    totalAmount = amountField ? parseMathExpression(recordDataObj[amountField.name]) : 0;
+    totalAmount = authoritativeAmount;
   }
 
   // Actual Balance column lookup:
@@ -564,7 +590,15 @@ export async function sendRecordSmsAction(
   const houseField = findFieldByPriority(fields, ['HSE NO', 'HOUSE NO', 'HOUSE', 'HSE', 'UNIT NO', 'HOUSE NUMBER']);
   const houseNo = houseField ? String(recordDataObj[houseField.name] || '').trim() : undefined;
 
-  const payload = await buildRecordSmsPayload(recordDataObj, fields, collection?.name, collectionId);
+  const payload = await buildRecordSmsPayload(
+    recordDataObj,
+    fields,
+    collection?.name,
+    collectionId,
+    undefined,
+    undefined,
+    installment
+  );
 
   if (!payload.phoneFieldFound) {
     await logAppEvent({

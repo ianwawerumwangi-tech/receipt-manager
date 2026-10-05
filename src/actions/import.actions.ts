@@ -482,12 +482,14 @@ export async function importSpreadsheet(data: {
 
         if (hasMappedData) {
           // Parse installments from formulas and slash-separated receipt numbers
-          const amountFieldKey = Object.keys(data.mappings).find(
-            (name) => name.toUpperCase() === 'RENT PAID' || name.toUpperCase() === 'AMOUNT PAID' || name.toUpperCase() === 'AMOUNT'
-          );
-          const rctFieldKey = Object.keys(data.mappings).find(
-            (name) => name.toUpperCase() === 'RCT NO' || name.toUpperCase() === 'RECEIPT NUMBER' || name.toUpperCase() === 'RECEIPT NO'
-          );
+          const amountFieldKey = Object.keys(data.mappings).find((name) => {
+            const upper = name.trim().toUpperCase();
+            return ['RENT PAID', 'AMOUNT PAID', 'TOTAL PAID', 'PAID', 'AMOUNT', 'TOTAL AMOUNT', 'MONTHLY RENT'].includes(upper);
+          });
+          const rctFieldKey = Object.keys(data.mappings).find((name) => {
+            const upper = name.trim().toUpperCase();
+            return ['RCT NO', 'RECEIPT NUMBER', 'RECEIPT NO', 'RECEIPT'].includes(upper);
+          });
 
           if (amountFieldKey && rctFieldKey) {
             const amountExcelHeader = data.mappings[amountFieldKey];
@@ -499,25 +501,37 @@ export async function importSpreadsheet(data: {
               const rctVal = String(recordData[rctFieldKey] || '').trim();
               
               let amounts: number[] = [];
-              if (amountCell && amountCell.value && typeof amountCell.value === 'object' && 'formula' in amountCell.value) {
-                const formula = (amountCell.value.formula || '').replace(/^=/, '').trim();
-                const parts = formula.split('+').map(p => Number(p.trim()));
-                if (parts.every(p => !isNaN(p))) {
-                  amounts = parts;
+              if (amountCell && amountCell.value) {
+                if (typeof amountCell.value === 'object' && 'formula' in amountCell.value) {
+                  const formula = (amountCell.value.formula || '').replace(/^=/, '').trim();
+                  const parts = formula.split('+').map(p => Number(p.replace(/,/g, '').trim())).filter(p => !isNaN(p));
+                  if (parts.length > 1) {
+                    amounts = parts;
+                  }
+                } else if (typeof amountCell.value === 'string' && amountCell.value.includes('+')) {
+                  const parts = amountCell.value.replace(/^=/, '').split('+').map(p => Number(p.replace(/,/g, '').trim())).filter(p => !isNaN(p));
+                  if (parts.length > 1) {
+                    amounts = parts;
+                  }
                 }
               }
               
               const rcts = rctVal.split('/').map(r => r.trim()).filter(Boolean);
-              if (amounts.length > 0 || rcts.length > 1) {
+              if (amounts.length > 1) {
                 const installments = [];
                 const count = Math.max(amounts.length, rcts.length);
                 for (let i = 0; i < count; i++) {
                   installments.push({
-                    amount: amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0),
-                    rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : ''),
+                    amount: amounts[i] ?? 0,
+                    rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : (rcts[0] || '')),
                   });
                 }
                 recordData['_installments'] = installments;
+              } else if (amounts.length === 1 && rcts.length > 1) {
+                recordData['_installments'] = [{
+                  amount: amounts[0],
+                  rct: rcts.join(' / '),
+                }];
               }
             }
           }

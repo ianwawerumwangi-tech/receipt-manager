@@ -92,13 +92,34 @@ export function extractRecordInstallments(
 ): { amount: number; rct: string }[] {
   if (!recordData) return [];
 
-  const amountCandidates = ['RENT PAID', 'AMOUNT PAID', 'AMOUNT', 'TOTAL PAID', 'TOTAL AMOUNT', 'PAID', 'DEPOSIT PAID'];
+  // 1. Primary payment columns (strictly prioritized over deposit)
+  const primaryAmountCandidates = [
+    'RENT PAID',
+    'AMOUNT PAID',
+    'TOTAL PAID',
+    'PAID',
+    'AMOUNT',
+    'TOTAL AMOUNT',
+    'MONTHLY RENT',
+  ];
   let amountField: { name: string; type?: string } | undefined;
-  for (const candidate of amountCandidates) {
+  for (const candidate of primaryAmountCandidates) {
     const found = fields.find((f) => f.name.trim().toUpperCase() === candidate);
     if (found) {
       amountField = found;
       break;
+    }
+  }
+
+  // Only fall back to deposit columns if NO rent or payment columns exist in schema
+  if (!amountField) {
+    const depositCandidates = ['DEPOSIT PAID', 'DEPOSIT'];
+    for (const candidate of depositCandidates) {
+      const found = fields.find((f) => f.name.trim().toUpperCase() === candidate);
+      if (found) {
+        amountField = found;
+        break;
+      }
     }
   }
 
@@ -115,6 +136,7 @@ export function extractRecordInstallments(
   const rctVal = String(rctField ? recordData[rctField.name] || '' : '').trim();
   const amountVal = amountField ? recordData[amountField.name] : undefined;
 
+  // Check stored _installments: only trust them if they strictly match the authoritative amount
   const insts = recordData._installments;
   if (Array.isArray(insts) && insts.length > 0) {
     const currentAmount = parseMathExpression(amountVal);
@@ -122,8 +144,13 @@ export function extractRecordInstallments(
     const currentRct = rctVal.toUpperCase();
     const instsRcts = insts.map((i: any) => String(i.rct || '').trim().toUpperCase()).filter(Boolean);
 
-    const amountMatches = !amountField || currentAmount === 0 || Math.abs(currentAmount - instsTotal) < 0.01;
-    const rctMatches = !rctField || !currentRct || instsRcts.some((r) => currentRct.includes(r));
+    // Sum of installments must strictly match currentAmount (within 0.01 tolerance)
+    const amountMatches = !amountField || Math.abs(currentAmount - instsTotal) < 0.01;
+    const rctMatches =
+      !rctField ||
+      !currentRct ||
+      instsRcts.some((r) => currentRct.includes(r)) ||
+      currentRct.includes(instsRcts.join('/'));
 
     if (amountMatches && rctMatches) {
       return insts.map((i: any) => ({
@@ -142,31 +169,50 @@ export function extractRecordInstallments(
     if (amountVal.includes('+')) {
       amounts = amountVal
         .split('+')
-        .map((p) => Number(p.trim()))
+        .map((p) => Number(p.replace(/,/g, '').trim()))
         .filter((p) => !isNaN(p));
     } else {
-      const parsed = Number(amountVal.trim());
+      const parsed = Number(amountVal.replace(/,/g, '').trim());
       if (!isNaN(parsed)) {
         amounts = [parsed];
       }
     }
   }
 
-  const count = Math.max(amounts.length, rcts.length);
-  if (count === 0) {
+  if (amounts.length === 0 && rcts.length === 0) {
     return [];
   }
 
-  const installments: { amount: number; rct: string }[] = [];
-  for (let i = 0; i < count; i++) {
-    const instAmount = amounts[i] ?? (amounts.length === 1 ? amounts[0] : 0);
-    const instRct = rcts[i] ?? (rcts.length === 1 ? rcts[0] : (rcts[0] || ''));
-    installments.push({
-      amount: instAmount,
-      rct: instRct,
-    });
+  // Case A: Multiple broken-down amounts provided (e.g. from formula 2000+65000)
+  if (amounts.length > 1) {
+    const installments: { amount: number; rct: string }[] = [];
+    const count = Math.max(amounts.length, rcts.length);
+    for (let i = 0; i < count; i++) {
+      installments.push({
+        amount: amounts[i] ?? 0,
+        rct: rcts[i] ?? (rcts.length === 1 ? rcts[0] : (rcts[0] || '')),
+      });
+    }
+    return installments;
   }
 
-  return installments;
+  // Case B: Single total amount with multiple receipt numbers (e.g. 67,000 across UI3CU4MCDDI / UI3CU4MEVB)
+  // CRITICAL: NEVER duplicate amounts[0] across all receipts! Doing so would double/triple the customer's payment!
+  if (amounts.length === 1 && rcts.length > 1) {
+    return [
+      {
+        amount: amounts[0],
+        rct: rcts.join(' / '),
+      },
+    ];
+  }
+
+  // Case C: Single amount and single (or no) receipt
+  return [
+    {
+      amount: amounts[0] ?? 0,
+      rct: rcts[0] ?? '',
+    },
+  ];
 }
 

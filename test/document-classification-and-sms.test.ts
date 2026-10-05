@@ -22,7 +22,7 @@ import {
   getInvoiceTemplate,
   resolveInvoiceMessage,
 } from '../src/lib/invoice-templates';
-import { parseMathExpression } from '../src/lib/utils';
+import { parseMathExpression, extractRecordInstallments } from '../src/lib/utils';
 
 const TEST_PHONE_1 = '0711667099';
 const TEST_PHONE_2 = '0119204765';
@@ -741,6 +741,209 @@ async function runAllTests() {
     assert(!isNaN(totalRevenue));
     assert(!totalRevenue.toLocaleString().includes('NaN'));
     assert.strictEqual(`KES ${totalRevenue.toLocaleString()}`, 'KES 20,500');
+  });
+
+  // --- SECTION 10: EUTOPIA & STUDIOS HAVEN SPREADSHEET SMS CONSISTENCY ---
+  console.log('\x1b[36m--- Section 10: EUTOPIA & STUDIOS HAVEN Consistency & Anti-Doubling ---\x1b[0m');
+
+  await test('EUTOPIA: Moses receives KES 10,000 rent receipt (NEVER KES 37,000 deposit)', async () => {
+    // Eutopia schema with DEPOSIT PAID coming before RENT PAID
+    const eutopiaFields = [
+      { name: 'HSE NO' },
+      { name: 'NAME' },
+      { name: 'PHONE NO' },
+      { name: 'DEPOSIT PAID' },
+      { name: 'MONTHLY RENT' },
+      { name: 'WATER' },
+      { name: 'GARBAGE' },
+      { name: 'BAL B/D' },
+      { name: 'RENT DUE' },
+      { name: 'RENT PAID' },
+      { name: 'RCT NO' },
+      { name: 'DATE' },
+      { name: 'PERIOD' },
+      { name: 'BALANCE' },
+      { name: 'STATUS' },
+    ];
+
+    // Moses row data: deposit 37,000, rent paid 10,000, balance 27,000
+    const mosesRecord = {
+      'HSE NO': 36,
+      NAME: 'MOSES',
+      'PHONE NO': TEST_PHONE_1,
+      'DEPOSIT PAID': 37000,
+      'MONTHLY RENT': 0,
+      'RENT DUE': 37000,
+      'RENT PAID': 10000,
+      'RCT NO': 'UIB1162PV6',
+      PERIOD: 'SEPTEMBER',
+      BALANCE: 27000,
+      STATUS: 'OCT ENTRY',
+    };
+
+    const insts = extractRecordInstallments(mosesRecord, eutopiaFields);
+    assert.strictEqual(insts.length, 1);
+    assert.strictEqual(insts[0].amount, 10000, 'Installment amount must be 10,000 (rent), NOT 37,000 (deposit)');
+    assert.strictEqual(insts[0].rct, 'UIB1162PV6');
+
+    const payload = await buildRecordSmsPayload(
+      mosesRecord,
+      eutopiaFields,
+      'EUTOPIA APARTMENT - SEPTEMBER'
+    );
+
+    assert.strictEqual(payload.phone, TEST_PHONE_1);
+    assert.strictEqual(payload.name, 'MOSES');
+    assert(
+      payload.message.includes('you are in receipt of KES 10,000'),
+      `Message must state KES 10,000, got: "${payload.message}"`
+    );
+    assert(
+      !payload.message.includes('KES 37,000'),
+      'Message must NEVER state deposit amount KES 37,000 as rent paid'
+    );
+    assert(
+      payload.message.includes('house #36'),
+      'Message must specify house #36'
+    );
+    assert(
+      payload.message.includes('month of SEPTEMBER'),
+      'Message must specify month of SEPTEMBER'
+    );
+    assert(
+      payload.message.includes('Your current balance is KES 27,000.'),
+      'Message must state correct balance of KES 27,000'
+    );
+  });
+
+  await test('STUDIOS HAVEN: Shukri Hassan receives KES 12,850 rent receipt (NEVER KES 0)', async () => {
+    // Studios Haven schema with DEPOSIT PAID coming before RENT PAID
+    const studiosFields = [
+      { name: 'HSE NO' },
+      { name: 'NAME' },
+      { name: 'PHONE NO' },
+      { name: 'DEPOSIT PAID' },
+      { name: 'MONTHLY RENT' },
+      { name: 'WATER BILL' },
+      { name: 'BAL B/D' },
+      { name: 'RENT DUE' },
+      { name: 'RENT PAID' },
+      { name: 'RCT NO' },
+      { name: 'DATE' },
+      { name: 'PERIOD' },
+      { name: 'BALANCE' },
+      { name: 'STATUS' },
+    ];
+
+    // Shukri Hassan row data: deposit null, rent paid 12,850, balance 0
+    const shukriRecord = {
+      'HSE NO': 'SH5',
+      NAME: 'SHUKRI HASSAN',
+      'PHONE NO': TEST_PHONE_2,
+      'DEPOSIT PAID': null,
+      'MONTHLY RENT': 12850,
+      'WATER BILL': 0,
+      'BAL B/D': 0,
+      'RENT DUE': 12850,
+      'RENT PAID': 12850,
+      'RCT NO': 'UIB21639Y3',
+      PERIOD: 'SEPTEMBER',
+      BALANCE: 0,
+      STATUS: 'OCT ENTRY',
+    };
+
+    const insts = extractRecordInstallments(shukriRecord, studiosFields);
+    assert.strictEqual(insts.length, 1);
+    assert.strictEqual(insts[0].amount, 12850, 'Installment amount must be 12,850 (rent paid), NOT 0');
+    assert.strictEqual(insts[0].rct, 'UIB21639Y3');
+
+    const payload = await buildRecordSmsPayload(
+      shukriRecord,
+      studiosFields,
+      'STUDIOS HAVEN - SEPTEMBER'
+    );
+
+    assert.strictEqual(payload.phone, TEST_PHONE_2);
+    assert(
+      payload.message.includes('you are in receipt of KES 12,850'),
+      `Message must state KES 12,850, got: "${payload.message}"`
+    );
+    assert(
+      !payload.message.includes('KES 0,'),
+      'Message must NEVER state KES 0 when rent paid is 12850'
+    );
+  });
+
+  await test('ANTI-DOUBLING: Slash-separated receipts with single evaluated amount never doubles', async () => {
+    const fields = [
+      { name: 'HSE NO' },
+      { name: 'NAME' },
+      { name: 'PHONE NO' },
+      { name: 'RENT PAID' },
+      { name: 'RCT NO' },
+      { name: 'BALANCE' },
+    ];
+
+    // Fred Onyango row: 67,000 evaluated number with 2 receipts
+    const fredRecord = {
+      'HSE NO': '13',
+      NAME: 'FRED ONYANGO',
+      'PHONE NO': TEST_PHONE_1,
+      'RENT PAID': 67000,
+      'RCT NO': 'UI3CU4MCDDI / UI3CU4MEVB',
+      BALANCE: 650,
+    };
+
+    const insts = extractRecordInstallments(fredRecord, fields);
+    const instSum = insts.reduce((sum, i) => sum + i.amount, 0);
+    assert.strictEqual(instSum, 67000, `Installment sum must be 67,000, NOT doubled (got: ${instSum})`);
+
+    const payload = await buildRecordSmsPayload(fredRecord, fields, 'EUTOPIA APARTMENT - SEPTEMBER');
+    assert(
+      payload.message.includes('you are in receipt of KES 67,000'),
+      `Message must state KES 67,000, got: "${payload.message}"`
+    );
+    assert(
+      !payload.message.includes('KES 134,000'),
+      'Message must NEVER double to KES 134,000'
+    );
+  });
+
+  await test('MULTI-INSTALLMENT FORMULAS: Correctly parses formulas like 2000+65000', async () => {
+    const fields = [
+      { name: 'HSE NO' },
+      { name: 'NAME' },
+      { name: 'PHONE NO' },
+      { name: 'RENT PAID' },
+      { name: 'RCT NO' },
+      { name: 'BALANCE' },
+    ];
+
+    const recordWithFormula = {
+      'HSE NO': '13',
+      NAME: 'FRED ONYANGO',
+      'PHONE NO': TEST_PHONE_2,
+      'RENT PAID': '2000+65000',
+      'RCT NO': 'UI3CU4MCDDI / UI3CU4MEVB',
+      BALANCE: 650,
+    };
+
+    const insts = extractRecordInstallments(recordWithFormula, fields);
+    assert.strictEqual(insts.length, 2);
+    assert.strictEqual(insts[0].amount, 2000);
+    assert.strictEqual(insts[0].rct, 'UI3CU4MCDDI');
+    assert.strictEqual(insts[1].amount, 65000);
+    assert.strictEqual(insts[1].rct, 'UI3CU4MEVB');
+
+    const payload = await buildRecordSmsPayload(recordWithFormula, fields, 'EUTOPIA APARTMENT - SEPTEMBER');
+    assert(payload.message.includes('you are in receipt of KES 67,000'));
+  });
+
+  await test('Test phone numbers 0711667099 and 0119204765 are properly formatted and valid', () => {
+    assert.strictEqual(formatPhoneNumber('0711667099'), '254711667099');
+    assert.strictEqual(formatPhoneNumber('0119204765'), '254119204765');
+    assert.strictEqual(formatPhoneNumber('254711667099'), '254711667099');
+    assert.strictEqual(formatPhoneNumber('254119204765'), '254119204765');
   });
 
   // Summary
